@@ -13,9 +13,9 @@ const DEFAULT_SETTINGS = {
   gateName: 'Main Gate',
   cameraId: '',
   lateAfter: '08:00',
-  backendUrl: '',
-  autoAccept: 0.9,
-  reviewFloor: 0.6,
+  zone: 'square',
+  fov: 78,
+  backendUrl: 'http://localhost:8000',
 };
 
 export const state = {

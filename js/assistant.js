@@ -5,6 +5,7 @@
 import * as data from './data.js';
 import { state, STATUS } from './data.js';
 import { $, esc, toast } from './ui.js';
+import { syncNow } from './sync.js';
 
 const API = 'https://api.groq.com/openai/v1';
 const MAX_STEPS = 8;
@@ -138,6 +139,32 @@ const TOOLS = [
       const file = data.exportExcel(date || data.today());
       ui.action(`Downloaded ${file}`);
       return { file };
+    },
+  },
+  {
+    name: 'email_report',
+    description: 'Email the daily attendance Excel report now to the configured recipients (the same report that is sent automatically every school day). Only when the user asks to send/email it.',
+    parameters: { type: 'object', properties: { date: dateParam } },
+    run: async ({ date }, ui) => {
+      const url = state.settings.backendUrl?.replace(/\/$/, '');
+      if (!url) return { error: 'No backend configured.' };
+      await syncNow();
+      const res = await fetch(url + '/report/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: date || data.today() }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) return { error: j.detail || `HTTP ${res.status}` };
+      ui.action(`Emailed the ${j.date} report to ${j.recipients.join(', ')}`);
+      return j;
+    },
+  },
+  {
+    name: 'report_schedule',
+    description: 'When the daily report email goes out, to whom, and whether the last one was sent.',
+    parameters: { type: 'object', properties: {} },
+    run: async () => {
+      const url = state.settings.backendUrl?.replace(/\/$/, '');
+      if (!url) return { error: 'No backend configured.' };
+      const [s, st] = await Promise.all([fetch(url + '/report/settings').then(r => r.json()), fetch(url + '/report/status').then(r => r.json())]);
+      return { enabled: s.enabled, recipients: s.recipients, time: s.time, days: s.days.map(d => ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]), next_run: st.next_run, problem: st.problem, recent: st.history.slice(-5) };
     },
   },
   {

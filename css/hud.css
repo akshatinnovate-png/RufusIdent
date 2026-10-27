@@ -104,6 +104,7 @@ body.hud-on { overflow: hidden; }
 .log ol { list-style: none; margin: 0; padding: 0; font-size: 12px; }
 .log li { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px dashed rgba(61, 255, 162, .12); }
 .log li:first-child { animation: lineIn .3s ease both; }
+.log li.dim { display: block; border: 0; }
 .log time { color: var(--cyan); }
 .log b { color: #fff; font-weight: 400; font-family: var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .log span { color: rgba(217, 251, 233, .55); }

@@ -10,5 +10,9 @@ if %errorlevel%==0 (
   start "RufusIdent server" /min powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0serve.ps1" -Port %PORT%
 )
 
+if exist "backend\.venv\Scripts\python.exe" (
+  start "RufusIdent backend" /min cmd /c "cd /d backend && .venv\Scripts\python.exe server.py"
+)
+
 timeout /t 2 /nobreak >nul
 start "" msedge --app=http://localhost:%PORT%/ --start-maximized

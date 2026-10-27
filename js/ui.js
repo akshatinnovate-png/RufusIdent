@@ -1,5 +1,7 @@
 // Small DOM helpers shared by every screen.
 
+import { state } from './data.js';
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -22,7 +24,8 @@ export function prettyDate(iso) {
 
 // Photo if the roster has one, otherwise a monogram.
 export function avatar(s, cls = 'avatar') {
-  if (s.photo) return `<img class="${cls}" src="${esc(s.photo)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'${cls} mono',textContent:'${esc(initials(s.name))}'}))">`;
+  const src = s.photo || (state.settings.backendUrl ? `${state.settings.backendUrl.replace(/\/$/, '')}/photo/${encodeURIComponent(s.id)}` : '');
+  if (src) return `<img class="${cls}" src="${esc(src)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'${cls} mono',textContent:'${esc(initials(s.name))}'}))">`;
   return `<span class="${cls} mono">${esc(initials(s.name))}</span>`;
 }
 

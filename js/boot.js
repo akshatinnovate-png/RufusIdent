@@ -18,11 +18,33 @@ async function checkBackend() {
   const url = state.settings.backendUrl;
   if (!url) return warn('not configured · gate runs in manual-mark mode');
   try {
-    const res = await withTimeout(fetch(url.replace(/\/$/, '') + '/health'), 3000, 'backend');
+    // start.bat launches the backend at the same time; give it a few seconds to load its models.
+    let res, lastErr;
+    for (let i = 0; i < 8 && !res; i++) {
+      try { res = await withTimeout(fetch(url.replace(/\/$/, '') + '/health'), 2000, 'backend'); }
+      catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 1000)); }
+    }
+    if (!res) throw lastErr;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return `online · ${url}`;
+    const h = await res.json();
+    if (!h.students) return warn('online but no students enrolled · run backend/enroll.py');
+    return `online · ${h.students.toLocaleString('en-IN')} students · ${h.photos.toLocaleString('en-IN')} photos · anti-spoof ${h.antispoof ? 'on' : 'off'}`;
   } catch (e) {
     return warn(`unreachable (${e.message}) · manual mode`);
+  }
+}
+
+async function checkReport() {
+  const url = state.settings.backendUrl?.replace(/\/$/, '');
+  if (!url) return warn('needs the recognition backend');
+  try {
+    const st = await (await withTimeout(fetch(url + '/report/status'), 3000, 'report')).json();
+    if (st.problem) return warn(`not set up (${st.problem.toLowerCase()}) · Settings → Daily report`);
+    if (!st.next_run) return warn('automatic email is off · Settings → Daily report');
+    const next = new Date(st.next_run).toLocaleString('en-IN', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return st.last_error ? warn(`last send failed: ${st.last_error}`) : `next email ${next}`;
+  } catch {
+    return warn('backend offline');
   }
 }
 
@@ -47,6 +69,7 @@ const STEPS = [
   ['Gate camera', () => withTimeout(probeCamera(), 15000, 'camera')],
   ['Face engine', () => withTimeout(loadEngine(), 30000, 'face engine')],
   ['Recognition backend', checkBackend],
+  ['Daily report', checkReport],
   ['AI assistant', () => withTimeout(checkGroq(), 8000, 'Groq')],
 ];
 

@@ -5,6 +5,7 @@ import { state, STATUS } from './data.js';
 import { runBoot } from './boot.js';
 import { openCamera, closeCamera, wireCamera, listCameras } from './camera.js';
 import { ask, resetChat, wireMic } from './assistant.js';
+import { startSync, syncNow } from './sync.js';
 import { $, $$, esc, avatar, toast, pct, prettyDate, STATUS_CLASS } from './ui.js';
 
 let route = { view: 'home', id: null };
@@ -257,6 +258,94 @@ async function openSettings() {
   f.elements.cameraId.value = state.settings.cameraId;
   updateDataStats();
   $('#settings').showModal();
+  loadReportSettings();
+}
+
+// ───────────── daily report (settings live on the backend) ─────────────
+
+const PROVIDERS = {
+  gmail: { host: 'smtp.gmail.com', port: 587, security: 'starttls' },
+  outlook: { host: 'smtp.office365.com', port: 587, security: 'starttls' },
+};
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+async function backendJson(path, body) {
+  const url = state.settings.backendUrl?.replace(/\/$/, '');
+  if (!url) throw new Error('Set the recognition backend URL (Settings → Gate) first.');
+  const res = await fetch(url + path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+  return j;
+}
+
+function reportStatusLine(st) {
+  const el = $('#rpStatus');
+  const last = st.history?.filter(h => !h.test).at(-1);
+  const parts = [];
+  if (st.problem) parts.push(`Not ready: ${st.problem}`);
+  else if (st.next_run) parts.push(`Next report: ${new Date(st.next_run).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`);
+  else parts.push('Automatic sending is off.');
+  if (last) parts.push(`last ${last.ok ? 'sent' : 'FAILED'} ${new Date(last.at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${last.ok ? '' : ': ' + last.detail}`);
+  el.textContent = parts.join(' · ');
+  el.className = `note ${st.problem || st.last_error ? 'bad' : 'ok'}`;
+}
+
+async function loadReportSettings() {
+  $('#rpDays').innerHTML = DAY_NAMES.map((d, i) => `<label><input type="checkbox" value="${i}">${d}</label>`).join('');
+  try {
+    const [s, st] = await Promise.all([backendJson('/report/settings'), backendJson('/report/status')]);
+    $('#rpEnabled').checked = s.enabled;
+    $('#rpRecipients').value = s.recipients.join('\n');
+    $('#rpTime').value = s.time;
+    $$('#rpDays input').forEach(c => { c.checked = s.days.includes(Number(c.value)); });
+    const prov = Object.entries(PROVIDERS).find(([, p]) => p.host === s.smtp.host)?.[0] || 'custom';
+    $('#rpProvider').value = prov;
+    $('#rpCustom').hidden = prov !== 'custom';
+    $('#rpHost').value = s.smtp.host; $('#rpPort').value = s.smtp.port; $('#rpSec').value = s.smtp.security;
+    $('#rpUser').value = s.smtp.username;
+    $('#rpPass').value = '';
+    $('#rpPass').placeholder = s.smtp.has_password ? '•••••••• (saved, leave blank to keep)' : 'app password';
+    $('#rpDir').value = s.reports_dir || '';
+    reportStatusLine(st);
+  } catch (e) {
+    $('#rpStatus').textContent = `Backend not reachable: ${e.message}`;
+    $('#rpStatus').className = 'note bad';
+  }
+}
+
+function reportForm() {
+  const prov = $('#rpProvider').value;
+  const smtp = prov === 'custom'
+    ? { host: $('#rpHost').value.trim(), port: Number($('#rpPort').value) || 587, security: $('#rpSec').value }
+    : { ...PROVIDERS[prov] };
+  return {
+    enabled: $('#rpEnabled').checked,
+    recipients: $('#rpRecipients').value.split(/[\n,;]+/).map(x => x.trim()).filter(Boolean),
+    time: $('#rpTime').value || '09:30',
+    days: $$('#rpDays input').filter(c => c.checked).map(c => Number(c.value)),
+    reports_dir: $('#rpDir').value.trim(),
+    smtp: { ...smtp, username: $('#rpUser').value.trim(), password: $('#rpPass').value },
+  };
+}
+
+async function reportAction(act) {
+  const status = $('#rpStatus');
+  try {
+    const form = reportForm();
+    const bad = form.recipients.find(r => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(r));
+    if (bad) throw new Error(`“${bad}” is not an email address.`);
+    await backendJson('/report/settings', form);
+    if (act === 'rp-save') toast('Report settings saved');
+    if (act === 'rp-test' || act === 'rp-now') {
+      status.textContent = 'Sending…'; status.className = 'note';
+      await syncNow();                      // make sure the latest marks are on the backend
+      const r = await backendJson('/report/send', { test: act === 'rp-test' });
+      toast(`Sent to ${r.recipients.join(', ')}`);
+    }
+  } catch (e) {
+    toast(e.message, { kind: 'warn' });
+  }
+  loadReportSettings();
 }
 
 function updateDataStats() {
@@ -268,9 +357,8 @@ function saveSettingsForm() {
   const v = n => f.elements[n].value.trim();
   data.saveSettings({
     groqKey: v('groqKey'), model: v('model') || 'openai/gpt-oss-120b',
-    gateName: v('gateName') || 'Main Gate', cameraId: f.elements.cameraId.value,
+    gateName: v('gateName') || 'Main Gate', cameraId: f.elements.cameraId.value, zone: f.elements.zone.value, fov: Number(v('fov')) || 78,
     lateAfter: v('lateAfter') || '08:00', backendUrl: v('backendUrl'),
-    autoAccept: Number(v('autoAccept')) || 0.9, reviewFloor: Number(v('reviewFloor')) || 0.6,
   });
   toast('Settings saved');
 }
@@ -307,6 +395,7 @@ function wire() {
       if (state.roster.length && !state.demo && !confirm('This replaces the real roster and attendance with demo data. Continue?')) return;
       await data.loadDemo(); updateDataStats(); toast('Demo data loaded (640 fake students)');
     }
+    if (act.startsWith('rp-')) reportAction(act);
     if (act === 'backup') download(`rufusident-backup-${data.today()}.json`, data.backupJson(), 'application/json');
     if (act === 'wipe') {
       if (!confirm('Erase the roster and ALL attendance history on this laptop? Download a backup first.')) return;
@@ -366,6 +455,7 @@ function wire() {
     $$('.tab-body').forEach(b => { b.hidden = b.dataset.body !== t.dataset.tab; });
   }));
   $('#settings').addEventListener('close', () => { if ($('#settings').returnValue === 'save') saveSettingsForm(); });
+  $('#rpProvider').addEventListener('change', e => { $('#rpCustom').hidden = e.target.value !== 'custom'; });
   $('#rosterFile').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -391,4 +481,5 @@ function wire() {
   await runBoot();
   $('#app').hidden = false;
   go();
+  startSync();
 })();
