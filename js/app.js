@@ -157,11 +157,15 @@ function renderStudent() {
         <span class="today-pill ${rec ? STATUS_CLASS[rec.s] : ''}">${rec ? `Today: ${STATUS[rec.s]} · ${esc(rec.t)}` : 'Today: not marked yet'}</span>
         <h2 class="ds-name">${esc(firstName)}<br>${esc(rest.join(' '))}</h2>
         <p class="ds-team"><img src="assets/crest.png" alt="">Class ${esc(s.cls)} · Section ${esc(s.section)}</p>
+        ${s.note ? `<p class="ds-note">★ ${esc(s.note)}</p>` : ''}
         <dl class="ds-facts">
           <div><dt>ADMISSION NO</dt><dd>${esc(s.id)}</dd></div>
           <div><dt>ROLL</dt><dd>${esc(s.roll || '—')}</dd></div>
           <div><dt>HOUSE</dt><dd>${esc(s.house || '—')}</dd></div>
           <div><dt>CLASS RANK</dt><dd>${classRank ? `${classRank} / ${data.studentsIn(key).length}` : '—'}</dd></div>
+          ${s.blood ? `<div><dt>BLOOD GROUP</dt><dd>${esc(s.blood)}</dd></div>` : ''}
+          ${s.father ? `<div class="wide"><dt>FATHER'S NAME</dt><dd class="txt">${esc(s.father)}</dd></div>` : ''}
+          ${s.phone ? `<div class="wide"><dt>PHONE</dt><dd class="txt"><a href="tel:${esc(s.phone.replace(/[^\d+]/g, ''))}">${esc(s.phone)}</a></dd></div>` : ''}
         </dl>
       </div>
 

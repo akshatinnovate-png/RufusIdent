@@ -10,6 +10,32 @@ It has five screens:
 - **Class registers.** Class-wise Present / Late / Absent with one-click editing, "mark unmarked absent", and Excel export (a summary sheet plus one sheet per class).
 - **Student datasheets.** Attendance %, days present and absent, streak, and the student's school rank on the attendance leaderboard.
 
+## Quick start (Windows, Command Prompt)
+
+Once, in **cmd**:
+
+```
+winget install -e --id Python.Python.3.12
+winget install -e --id Git.Git
+```
+
+Close cmd, open a new one, then:
+
+```
+cd %USERPROFILE%\Desktop
+git clone -b claude/ecstatic-thompson-9txj5t https://github.com/akshatinnovate-png/RufusIdent.git
+cd RufusIdent\backend
+install.bat
+cd ..
+start.bat
+```
+
+`install.bat` takes 5–15 minutes the first time, because it downloads about 300 MB of models. Then, in the app:
+1. Go to Settings → Data and import your roster (`.xlsx` or `.csv`).
+2. Open the gate camera.
+
+Every day after that, just double-click `start.bat`.
+
 ## Run it (Windows laptop)
 
 1. Double-click **`start.bat`**.

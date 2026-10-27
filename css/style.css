@@ -508,3 +508,9 @@ img.ds-avatar { object-fit: cover; }
 #rpStatus.ok { color: var(--green-700); } #rpStatus.bad { color: #9a2f12; }
 .settings form { max-height: 92vh; }
 .settings .tab-body { overflow-y: auto; max-height: 62vh; }
+
+/* extra roster details on the datasheet */
+.ds-note { display: inline-block; margin: -18px 0 26px; padding: 6px 12px; border-radius: 999px; background: var(--navy); color: #fff; font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
+.ds-facts .wide { grid-column: span 1; }
+.ds-facts dd.txt { font-family: var(--sans); font-size: 17px; font-weight: 700; }
+.ds-facts dd a { color: inherit; }

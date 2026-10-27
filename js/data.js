@@ -275,6 +275,10 @@ const COLS = {
   roll: ['roll', 'roll no', 'roll_no', 'roll number', 'rollno'],
   house: ['house'],
   photo: ['photo', 'photo_url', 'image', 'picture'],
+  blood: ['blood', 'blood group', 'blood_group', 'bloodgroup'],
+  father: ['father', 'father name', 'father_name', "father's name", 'fathers name', 'guardian', 'parent'],
+  phone: ['phone', 'phone no', 'phone_no', 'mobile', 'mobile no', 'contact', 'contact no'],
+  note: ['note', 'notes', 'remarks', 'about'],
 };
 
 export function normaliseRoster(rows) {
