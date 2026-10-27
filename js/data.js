@@ -65,6 +65,8 @@ function changed() { version++; listeners.forEach(fn => fn()); }
 
 export async function load() {
   try { Object.assign(state.settings, JSON.parse(localStorage.getItem('ri.settings') || '{}')); } catch {}
+  // A blank backend address must never switch recognition off.
+  if (!state.settings.backendUrl) state.settings.backendUrl = DEFAULT_SETTINGS.backendUrl;
   const meta = (await idbGet('meta')) || {};
   state.demo = !!meta.demo;
   setRoster((await idbGet('roster')) || []);
