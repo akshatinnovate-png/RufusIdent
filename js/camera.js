@@ -288,7 +288,10 @@ async function pump() {
     fd.append('image', blob, 'frame.jpg');
     fd.append('gate', state.settings.gateName);
     const res = await fetch(state.settings.backendUrl.replace(/\/$/, '') + '/frame', { method: 'POST', body: fd, signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status} ${detail.slice(0, 80)}`);
+    }
     const j = await res.json();
     backend = { faces: j.faces || [], at: performance.now(), scale: z.w / c.width, z, ms: j.ms };
     $('#mMatcher').textContent = `BACKEND · ${j.ms} ms${j.far_scan ? ' · FAR' : ''}`;
@@ -300,7 +303,10 @@ async function pump() {
     }
     if (handled.size > 500) handled.clear();
   } catch (e) {
-    $('#mMatcher').textContent = `BACKEND · ${e.name === 'TimeoutError' ? 'TIMEOUT' : 'OFFLINE'}`;
+    const why = e.name === 'TimeoutError' ? 'TIMEOUT' : e.message.startsWith('HTTP') ? e.message.split(' ').slice(0, 2).join(' ') : 'NOT RUNNING';
+    $('#mMatcher').textContent = `BACKEND · ${why}`;
+    flash(why === 'NOT RUNNING' ? `BACKEND NOT RUNNING AT ${state.settings.backendUrl}` : `BACKEND ERROR · ${e.message.slice(0, 60)}`, 'bad', 1500);
+    console.error('Backend /frame failed:', e);
     await new Promise(r => setTimeout(r, 1000));
   } finally {
     inflight = false;

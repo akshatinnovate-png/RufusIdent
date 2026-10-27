@@ -295,8 +295,8 @@
         <input type="number" name="fov" min="10" max="120" step="1">
       </label>
       <label>Mark “Late” after <input type="time" name="lateAfter"></label>
-      <label>Recognition backend URL <input name="backendUrl" placeholder="http://localhost:8000"></label>
-      <p class="note">Recognition runs on the backend (<code>backend/server.py</code>, usually <code>http://localhost:8000</code>). Its thresholds are calibrated from the students' own photos when you run <code>enroll.py</code>. Unsure matches go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
+      <label>Recognition backend URL <input name="backendUrl" placeholder="http://127.0.0.1:8000"></label>
+      <p class="note">Recognition runs on the backend (<code>backend/server.py</code>, usually <code>http://127.0.0.1:8000</code>). Its thresholds are calibrated from the students' own photos when you run <code>enroll.py</code>. Unsure matches go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
     </div>
     <div class="tab-body" data-body="report" hidden>
       <p class="note" id="rpStatus">Loading…</p>

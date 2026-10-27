@@ -11,7 +11,8 @@ if %errorlevel%==0 (
 )
 
 if exist "backend\.venv\Scripts\python.exe" (
-  start "RufusIdent backend" /min cmd /c "cd /d backend && .venv\Scripts\python.exe server.py"
+  rem /k keeps the window open if the backend stops, so its error message stays visible
+  start "RufusIdent backend" /min cmd /k "cd /d backend && .venv\Scripts\python.exe server.py"
 )
 
 timeout /t 2 /nobreak >nul
