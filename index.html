@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RufusIdent · Gulmohur High School</title>
+  <meta name="description" content="AI attendance system for Gulmohur High School, Jamshedpur.">
+  <link rel="icon" href="assets/crest.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/hud.css">
+  <script src="vendor/xlsx.full.min.js" defer></script>
+</head>
+<body>
+
+<!-- ───────────── BOOT ───────────── -->
+<div id="boot" class="boot">
+  <div class="boot-bg" aria-hidden="true"></div>
+  <div class="petals" aria-hidden="true"></div>
+  <div class="boot-center">
+    <div class="boot-crest">
+      <svg class="boot-ring" viewBox="0 0 200 200" aria-hidden="true">
+        <circle cx="100" cy="100" r="92" class="ring-track"/>
+        <circle cx="100" cy="100" r="92" class="ring-fill" id="bootRing"/>
+        <circle cx="100" cy="100" r="80" class="ring-dash"/>
+      </svg>
+      <img src="assets/crest.png" alt="Gulmohur High School crest">
+    </div>
+    <h1 class="boot-title"><span id="bootTitle"></span><i class="caret"></i></h1>
+    <p class="boot-sub">RufusIdent · AI Attendance System · High School Section</p>
+    <p class="boot-motto">“Stop not till the goal is reached” · प्राप्य वरान्निबोधत</p>
+    <ol class="boot-log" id="bootLog" aria-live="polite"></ol>
+    <p class="boot-hint" id="bootHint">Starting up…</p>
+  </div>
+  <footer class="boot-foot">Made by GHS AI Team · Developed by Akshat Sarkar · MIT License</footer>
+</div>
+
+<!-- ───────────── APP SHELL ───────────── -->
+<div id="app" class="app" hidden>
+  <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+  <nav class="rail" aria-label="Main">
+    <button class="rail-btn primary" data-act="new-chat" title="New chat">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="rail-btn" data-act="search" title="Search students (Ctrl+K)">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    </button>
+    <a class="rail-btn" href="#/home" data-nav="home" title="Assistant">
+      <svg viewBox="0 0 24 24"><path d="M4 11.5 12 4l8 7.5V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"/></svg>
+    </a>
+    <a class="rail-btn" href="#/camera" data-nav="camera" title="Gate camera">
+      <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="11" r="3"/><path d="M7.5 17a5 5 0 0 1 9 0"/></svg>
+    </a>
+    <a class="rail-btn" href="#/classes" data-nav="classes" title="Class registers">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/></svg>
+    </a>
+    <a class="rail-btn" href="#/leaderboard" data-nav="leaderboard" title="Leaderboard">
+      <svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM7 6H4v2a3 3 0 0 0 3 3M17 6h3v2a3 3 0 0 1-3 3"/></svg>
+    </a>
+    <button class="rail-btn" data-act="settings" title="Settings">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+    <img class="rail-crest" src="assets/crest.png" alt="GHS">
+  </nav>
+
+  <main class="shell">
+    <header class="topbar">
+      <button class="model-pill" data-act="settings" title="Assistant settings">
+        <span class="spark"></span> RufusIdent AI · gpt-oss-120b
+        <svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="topbar-title">Gulmohur High School <span id="topDate"></span></div>
+      <a class="gate-btn" href="#/camera">
+        <span class="live-dot"></span> Open Gate Camera
+      </a>
+    </header>
+
+    <div class="demo-banner" id="demoBanner" hidden>
+      DEMO DATA — these students are generated, not real. Import the real roster in Settings → Data.
+    </div>
+
+    <!-- HOME / ASSISTANT -->
+    <section class="view" data-view="home">
+      <div class="home-hero" id="homeHero">
+        <div class="hero-text">
+          <h2><span class="muted" id="greet">Good morning,</span> Gulmohur.<br>Ready for today's roll call?</h2>
+        </div>
+        <div class="mascot">
+          <div class="bubble">Namaste! 👋<br>Ask me anything about attendance.</div>
+          <div class="mascot-orb"><img src="assets/crest.png" alt=""></div>
+        </div>
+        <div class="cards" id="homeCards"></div>
+      </div>
+
+      <div class="thread" id="thread" hidden></div>
+
+      <div class="composer-wrap">
+        <div class="composer-meta">
+          <span><i class="spark"></i> Agentic: it can look up, mark and export attendance</span>
+          <span>Powered by Groq · gpt-oss-120b</span>
+        </div>
+        <form class="composer" id="composer">
+          <div class="composer-row">
+            <textarea id="prompt" rows="1" placeholder="Example: “Who is absent in X-A today?”"></textarea>
+            <button type="button" class="icon-btn" id="micBtn" title="Speak">
+              <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            </button>
+            <button type="submit" class="icon-btn send" id="sendBtn" title="Send">
+              <svg viewBox="0 0 24 24"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4z"/></svg>
+            </button>
+          </div>
+          <div class="chips" id="chips"></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- CLASSES -->
+    <section class="view" data-view="classes" hidden>
+      <div class="page-head">
+        <div>
+          <h2>Class Registers</h2>
+          <p class="muted" id="classesSub"></p>
+        </div>
+        <div class="page-actions">
+          <input type="date" id="classesDate" class="input">
+          <button class="btn ghost" data-act="finalize-all">Mark unmarked absent</button>
+          <button class="btn dark" data-act="export">Export Excel</button>
+        </div>
+      </div>
+      <div class="class-grid" id="classGrid"></div>
+    </section>
+
+    <!-- ONE CLASS -->
+    <section class="view" data-view="class" hidden>
+      <div class="page-head">
+        <div>
+          <a href="#/classes" class="back">← All classes</a>
+          <h2 id="classTitle"></h2>
+          <p class="muted" id="classSub"></p>
+        </div>
+        <div class="page-actions">
+          <input type="search" id="classFilter" class="input" placeholder="Filter by name or roll">
+          <button class="btn ghost" data-act="finalize-class">Mark unmarked absent</button>
+          <button class="btn dark" data-act="export">Export Excel</button>
+        </div>
+      </div>
+      <div class="register" id="register"></div>
+    </section>
+
+    <!-- STUDENT DATASHEET -->
+    <section class="view" data-view="student" hidden>
+      <div id="sheet"></div>
+    </section>
+
+    <!-- LEADERBOARD -->
+    <section class="view" data-view="leaderboard" hidden>
+      <div class="page-head">
+        <div>
+          <h2>Attendance Leaderboard</h2>
+          <p class="muted">Ranked by attendance %, then days present. Late counts as present.</p>
+        </div>
+        <div class="page-actions">
+          <select id="lbClass" class="input"></select>
+        </div>
+      </div>
+      <div class="podium" id="podium"></div>
+      <div class="lb-table" id="lbTable"></div>
+    </section>
+
+    <footer class="foot">
+      Made by <b>GHS AI Team</b> · Developed by <b>Akshat Sarkar</b> · MIT License ·
+      Gulmohur High School, Outer Road, Telco Town, Jamshedpur – 831004 · 0657 228 6811 · office@gulmohurschool.org
+    </footer>
+  </main>
+</div>
+
+<!-- ───────────── GATE CAMERA (HUD) ───────────── -->
+<div id="hud" class="hud" hidden>
+  <video id="hudVideo" playsinline muted></video>
+  <canvas id="hudCanvas"></canvas>
+  <div class="hud-scan" aria-hidden="true"></div>
+  <div class="hud-vignette" aria-hidden="true"></div>
+
+  <header class="hud-top">
+    <div class="hud-brand">
+      <img src="assets/crest.png" alt="">
+      <div>
+        <b>GULMOHUR HIGH SCHOOL</b>
+        <span id="hudGate">GATE · MAIN</span>
+      </div>
+    </div>
+    <div class="hud-status" id="hudStatus">INITIALISING</div>
+    <div class="hud-clock"><b id="hudClock">--:--:--</b><span id="hudDate"></span></div>
+    <a class="hud-exit" href="#/home" title="Back to dashboard (Esc)">✕</a>
+  </header>
+
+  <aside class="hud-col left">
+    <div class="panel">
+      <h4>SYSTEM</h4>
+      <dl class="kv">
+        <dt>FEED</dt><dd id="mRes">—</dd>
+        <dt>FPS</dt><dd id="mFps">—</dd>
+        <dt>ENGINE</dt><dd id="mEngine">—</dd>
+        <dt>FACES</dt><dd id="mFaces">0</dd>
+        <dt>MATCHER</dt><dd id="mMatcher">—</dd>
+      </dl>
+    </div>
+    <div class="panel">
+      <h4>LIGHT LEVEL <span id="mLight">—</span></h4>
+      <canvas id="lightGraph" width="260" height="70"></canvas>
+    </div>
+    <div class="panel">
+      <h4>SUBJECT</h4>
+      <dl class="kv">
+        <dt>SIZE</dt><dd id="mSize">—</dd>
+        <dt>POSE</dt><dd id="mPose">—</dd>
+        <dt>QUALITY</dt><dd id="mQuality">—</dd>
+      </dl>
+    </div>
+  </aside>
+
+  <aside class="hud-col right">
+    <div class="panel today">
+      <h4>TODAY · HIGH SCHOOL</h4>
+      <div class="ring-wrap">
+        <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="52" class="rt"/><circle cx="60" cy="60" r="52" class="rf" id="todayRing"/></svg>
+        <div class="ring-num"><b id="todayPct">0%</b><span id="todayCount">0 / 0</span></div>
+      </div>
+      <div class="tri"><span>PRESENT <b id="tP">0</b></span><span>LATE <b id="tL">0</b></span><span>ABSENT <b id="tA">0</b></span></div>
+    </div>
+    <div class="panel ident" id="identPanel">
+      <h4>LAST IDENTIFIED</h4>
+      <div id="ident" class="ident-body"><p class="dim">Waiting for first student…</p></div>
+    </div>
+    <div class="panel review" id="reviewPanel" hidden>
+      <h4>NEEDS REVIEW <span id="reviewCount"></span></h4>
+      <div id="reviewList"></div>
+    </div>
+    <div class="panel log">
+      <h4>GATE LOG</h4>
+      <ol id="gateLog"></ol>
+    </div>
+  </aside>
+
+  <footer class="hud-bottom">
+    <div class="hud-prompt" id="hudPrompt">STAND IN FRONT OF THE CAMERA</div>
+    <div class="manual">
+      <input id="manualInput" placeholder="Manual mark: name or admission no." autocomplete="off">
+      <div id="manualResults" class="manual-results"></div>
+    </div>
+  </footer>
+</div>
+
+<!-- ───────────── SEARCH PALETTE ───────────── -->
+<div class="palette" id="palette" hidden>
+  <div class="palette-box">
+    <input id="paletteInput" placeholder="Search a student by name, admission no. or class…" autocomplete="off">
+    <div id="paletteResults"></div>
+  </div>
+</div>
+
+<!-- ───────────── SETTINGS ───────────── -->
+<dialog id="settings" class="settings">
+  <form method="dialog" id="settingsForm">
+    <header><h3>Settings</h3><button value="cancel" class="x" aria-label="Close">✕</button></header>
+    <div class="tabs">
+      <button type="button" class="tab on" data-tab="ai">Assistant</button>
+      <button type="button" class="tab" data-tab="gate">Gate</button>
+      <button type="button" class="tab" data-tab="data">Data</button>
+    </div>
+    <div class="tab-body" data-body="ai">
+      <label>Groq API key
+        <input type="password" name="groqKey" placeholder="gsk_…" autocomplete="off">
+      </label>
+      <p class="note">Stored only in this browser. Anyone using this laptop's browser profile can read it. Move it to the backend before going live.</p>
+      <label>Model <input name="model" placeholder="openai/gpt-oss-120b"></label>
+    </div>
+    <div class="tab-body" data-body="gate" hidden>
+      <label>Gate name <input name="gateName" placeholder="Main Gate"></label>
+      <label>Camera <select name="cameraId"><option value="">Default camera</option></select></label>
+      <label>Mark “Late” after <input type="time" name="lateAfter"></label>
+      <label>Recognition backend URL <input name="backendUrl" placeholder="http://localhost:8000"></label>
+      <div class="two">
+        <label>Auto-accept at ≥ <input type="number" name="autoAccept" step="0.01" min="0.5" max="1"></label>
+        <label>Send to review at ≥ <input type="number" name="reviewFloor" step="0.01" min="0" max="1"></label>
+      </div>
+      <p class="note">Recognition runs on the backend. Matches under the auto-accept score go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
+    </div>
+    <div class="tab-body" data-body="data" hidden>
+      <label>Import student roster (.xlsx or .csv)
+        <input type="file" id="rosterFile" accept=".xlsx,.xls,.csv">
+      </label>
+      <p class="note">Columns: <code>admission_no, name, class, section, roll, house, photo</code>. Header names are matched loosely (“Adm No”, “Student Name” work too). Importing replaces the current roster; attendance history is kept.</p>
+      <div class="row-btns">
+        <button type="button" class="btn ghost" data-act="demo">Load demo data</button>
+        <button type="button" class="btn ghost" data-act="backup">Download backup (.json)</button>
+        <button type="button" class="btn danger" data-act="wipe">Erase all data</button>
+      </div>
+      <p class="note" id="dataStats"></p>
+    </div>
+    <footer><button value="cancel" class="btn ghost">Cancel</button><button value="save" class="btn dark" id="saveSettings">Save</button></footer>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
