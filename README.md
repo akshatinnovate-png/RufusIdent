@@ -152,9 +152,38 @@ Every decision saves the face (with some surroundings):
 
 This is a few MB a day, not every frame.
 
+## Daily attendance email
+
+Every school day, at a time you choose, the backend emails an Excel workbook to the recipients. It contains:
+- **Summary** (class-wise, with colour-coded attendance %)
+- **Absentees** (absent plus students not seen at the gate)
+- **Late arrivals**
+- **one sheet per class:** roll, admission no, name, status, time, who marked it, match confidence
+
+The email body has the headline numbers, a class table, and any class below 85%.
+
+**Set up:** Dashboard → Settings → **Daily report**:
+1. Tick *Email the attendance Excel automatically*.
+2. Add the recipients (one per line).
+3. Set the time (for example 09:30, after the late cut-off) and the school days.
+4. Choose the mail provider and enter the sending address and its **app password**. For Gmail: Google Account → Security → 2-Step Verification → App passwords.
+5. Optionally, enter a folder for a copy of each workbook, such as your OneDrive folder.
+6. Press **Send test email**.
+
+**How it works:**
+- The dashboard copies the roster and each day's attendance to the backend (only what changed, about 2 s after each mark). Those files are in `backend/data/records/`.
+- The backend sends the report even if nobody has the dashboard open.
+- **Laptop off at send time?** The report goes out when the backend starts again that day.
+- **Nothing marked that day** (a holiday)? No email is sent.
+- **Sending failed?** It retries every 10 minutes. The error shows in Settings and on the boot screen.
+- **"Send today's report now"**, or asking the AI assistant "email today's report", sends an extra copy. It never cancels the scheduled one.
+- **Passwords:** the mail password is stored only in `backend/data/report_settings.json` on the laptop and is never sent back to the browser. To keep it out of that file, set the environment variable `RUFUS_SMTP_PASSWORD` instead.
+
+Microsoft has been switching off password-based SMTP for many Office 365 accounts. If Outlook sending fails, a Gmail or Google Workspace account with an app password is the reliable option.
+
 ## Where data lives today
 
-Attendance is stored in the browser's IndexedDB on the gate laptop. Use **Settings → Data → Download backup** regularly.
+Attendance is stored in the browser's IndexedDB on the gate laptop, and copied to `backend/data/records/` for the daily email. Use **Settings → Data → Download backup** regularly.
 
 `js/data.js` is the only file that reads or writes data. When the backend is ready, it can swap these functions for API calls without changing any screen.
 

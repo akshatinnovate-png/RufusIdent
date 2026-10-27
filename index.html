@@ -271,6 +271,7 @@
     <div class="tabs">
       <button type="button" class="tab on" data-tab="ai">Assistant</button>
       <button type="button" class="tab" data-tab="gate">Gate</button>
+      <button type="button" class="tab" data-tab="report">Daily report</button>
       <button type="button" class="tab" data-tab="data">Data</button>
     </div>
     <div class="tab-body" data-body="ai">
@@ -296,6 +297,43 @@
       <label>Mark “Late” after <input type="time" name="lateAfter"></label>
       <label>Recognition backend URL <input name="backendUrl" placeholder="http://localhost:8000"></label>
       <p class="note">Recognition runs on the backend (<code>backend/server.py</code>, usually <code>http://localhost:8000</code>). Its thresholds are calibrated from the students' own photos when you run <code>enroll.py</code>. Unsure matches go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
+    </div>
+    <div class="tab-body" data-body="report" hidden>
+      <p class="note" id="rpStatus">Loading…</p>
+      <label class="check"><input type="checkbox" id="rpEnabled"> Email the attendance Excel automatically</label>
+      <label>Send to (one email address per line)
+        <textarea id="rpRecipients" rows="3" placeholder="principal@gulmohurschool.org&#10;office@gulmohurschool.org"></textarea>
+      </label>
+      <div class="two">
+        <label>Send at <input type="time" id="rpTime"></label>
+        <label>Mail provider
+          <select id="rpProvider">
+            <option value="gmail">Gmail / Google Workspace</option>
+            <option value="outlook">Outlook / Office 365</option>
+            <option value="custom">Other (custom)</option>
+          </select>
+        </label>
+      </div>
+      <div class="days" id="rpDays"></div>
+      <div class="two">
+        <label>Sending email address <input id="rpUser" autocomplete="off" placeholder="attendance@gulmohurschool.org"></label>
+        <label>App password <input type="password" id="rpPass" autocomplete="new-password" placeholder="app password"></label>
+      </div>
+      <div class="two custom-smtp" id="rpCustom" hidden>
+        <label>SMTP server <input id="rpHost" placeholder="smtp.example.org"></label>
+        <label>Port / security
+          <span class="inline"><input type="number" id="rpPort" style="width:90px"><select id="rpSec"><option value="starttls">STARTTLS</option><option value="ssl">SSL</option><option value="none">None</option></select></span>
+        </label>
+      </div>
+      <label>Also save a copy in (e.g. your OneDrive folder; blank = backend/reports)
+        <input id="rpDir" placeholder="C:\Users\you\OneDrive\Attendance">
+      </label>
+      <p class="note">Gmail needs an <b>App Password</b> (Google Account → Security → 2-Step Verification → App passwords), not your normal password. The password stays on this laptop's backend and is never shown again.</p>
+      <div class="row-btns">
+        <button type="button" class="btn dark" data-act="rp-save">Save report settings</button>
+        <button type="button" class="btn ghost" data-act="rp-test">Send test email</button>
+        <button type="button" class="btn ghost" data-act="rp-now">Send today's report now</button>
+      </div>
     </div>
     <div class="tab-body" data-body="data" hidden>
       <label>Import student roster (.xlsx or .csv)

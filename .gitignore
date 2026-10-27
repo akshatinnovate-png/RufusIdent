@@ -10,3 +10,4 @@ backend/models/
 backend/.venv/
 backend/config.json
 roster.*
+backend/reports/

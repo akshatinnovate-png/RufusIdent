@@ -34,6 +34,20 @@ async function checkBackend() {
   }
 }
 
+async function checkReport() {
+  const url = state.settings.backendUrl?.replace(/\/$/, '');
+  if (!url) return warn('needs the recognition backend');
+  try {
+    const st = await (await withTimeout(fetch(url + '/report/status'), 3000, 'report')).json();
+    if (st.problem) return warn(`not set up (${st.problem.toLowerCase()}) · Settings → Daily report`);
+    if (!st.next_run) return warn('automatic email is off · Settings → Daily report');
+    const next = new Date(st.next_run).toLocaleString('en-IN', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return st.last_error ? warn(`last send failed: ${st.last_error}`) : `next email ${next}`;
+  } catch {
+    return warn('backend offline');
+  }
+}
+
 const STEPS = [
   ['Runtime', async () => {
     if (!window.isSecureContext) throw new Error('open the app with start.bat (localhost), not by double-clicking the file');
@@ -55,6 +69,7 @@ const STEPS = [
   ['Gate camera', () => withTimeout(probeCamera(), 15000, 'camera')],
   ['Face engine', () => withTimeout(loadEngine(), 30000, 'face engine')],
   ['Recognition backend', checkBackend],
+  ['Daily report', checkReport],
   ['AI assistant', () => withTimeout(checkGroq(), 8000, 'Groq')],
 ];
 

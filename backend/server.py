@@ -5,6 +5,14 @@
 GET  /health                 status, enrolled students, thresholds
 POST /frame                  multipart image (a gate camera frame) -> every face in it, tracked and identified
 POST /reload                 reload the gallery after running enroll.py
+GET  /sync/state             what the backend already has (the dashboard pushes the rest)
+POST /sync/roster            the student list
+POST /sync/day/{date}        one day's attendance
+GET  /report/settings        daily email settings (password never returned)
+POST /report/settings        change them
+GET  /report/status          last sent, next run, errors
+POST /report/send            email a report now ({"date": "YYYY-MM-DD", "test": true})
+GET  /report/xlsx?date=      download the workbook
 GET  /photo/{admission_no}   the student's best enrolment photo
 GET  /student/{admission_no} enrolment details for one student
 """
@@ -16,14 +24,16 @@ import time
 
 import cv2
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from config import load_config
 from engine import Engine, decode_image
 from fusion import Fusion
 from gallery import Gallery
+from records import Store
+from report import Reporter
 from tracker import Tracker
 
 VERSION = "2.0.0"
@@ -32,11 +42,14 @@ engine = Engine(cfg)
 fusion = Fusion(cfg, liveness=engine.spoof is not None)
 tracker = Tracker(ttl_s=3.0)
 gallery = Gallery.load(cfg.data_dir)
+store = Store(cfg.data_dir)
+reporter = Reporter(cfg.data_dir, os.path.join(os.path.dirname(cfg.evidence_dir), "reports"), store)
 frame_lock = threading.Lock()          # one frame at a time keeps tracking consistent
 state = {"frames": 0, "learned": 0, "last_adapt_save": time.monotonic()}
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
+    reporter.start()
     yield
     if gallery is not None and len(gallery.adapt):
         gallery.save_adaptive(cfg.data_dir)      # keep what was learned at the gate
@@ -133,6 +146,62 @@ def frame(image: UploadFile = File(...), gate: str = Form("")):
             state["learned"], state["last_adapt_save"] = 0, time.monotonic()
 
     return {"faces": out, "far_scan": far_scan, "ms": round((time.perf_counter() - t0) * 1000)}
+
+
+# ───────────── attendance sync + daily report ─────────────
+
+@app.get("/sync/state")
+def sync_state():
+    return store.sync_state()
+
+
+@app.post("/sync/roster")
+def sync_roster(body: dict = Body(...)):
+    store.put_roster(body.get("roster", []), bool(body.get("demo")), body.get("hash", ""))
+    return {"ok": True}
+
+
+@app.post("/sync/day/{date}")
+def sync_day(date: str, body: dict = Body(...)):
+    try:
+        store.put_day(date, body.get("records", {}), body.get("hash", ""))
+    except ValueError:
+        raise HTTPException(400, "Date must be YYYY-MM-DD")
+    return {"ok": True}
+
+
+@app.get("/report/settings")
+def report_settings():
+    return reporter.public_settings()
+
+
+@app.post("/report/settings")
+def report_settings_update(body: dict = Body(...)):
+    return reporter.update_settings(body)
+
+
+@app.get("/report/status")
+def report_status():
+    return reporter.status()
+
+
+@app.post("/report/send")
+def report_send(body: dict = Body(default={})):
+    try:
+        return reporter.run(body.get("date"), test=bool(body.get("test")))
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/report/xlsx")
+def report_xlsx(date: str = ""):
+    date = date or dt.date.today().isoformat()
+    try:
+        xlsx = reporter.build(date)[0]
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return Response(xlsx, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="GHS_Attendance_{date}.xlsx"'})
 
 
 @app.get("/photo/{student_id}")

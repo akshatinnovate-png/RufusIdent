@@ -165,5 +165,76 @@ class Tracking(unittest.TestCase):
         self.assertNotEqual(b[1], a[0])
 
 
+class DailyReport(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from records import Store
+        from report import Reporter
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(self.tmp.name)
+        roster = [{"id": str(i), "name": f"S{i}", "cls": c, "section": "A", "roll": str(i)} for i, c in enumerate(["X", "X", "IX", "XII"], 1)]
+        self.store.put_roster(roster, False, "h")
+        import datetime as dt
+        self.today = dt.date.today().isoformat()
+        self.store.put_day(self.today, {"1": {"s": "P", "t": "07:50", "src": "cam", "c": 0.99}, "2": {"s": "L", "t": "08:20", "src": "cam"},
+                                        "3": {"s": "A", "t": "09:15", "src": "finalize"}}, "d")
+        self.r = Reporter(self.tmp.name, self.tmp.name + "/reports", self.store)
+        self.sent = []
+        import report
+        self._send = report.send
+        report.send = lambda settings, msg: self.sent.append(msg)
+
+    def tearDown(self):
+        import report
+        report.send = self._send
+        self.tmp.cleanup()
+
+    def configure(self, **kw):
+        self.r.update_settings({"enabled": True, "recipients": ["a@b.org"], "time": "00:00", "days": list(range(7)),
+                                "smtp": {"host": "smtp.x", "port": 587, "username": "me@x.org", "password": "pw"}, **kw})
+
+    def test_workbook_and_summary(self):
+        import io
+        import openpyxl
+        from report import build_workbook, summarise
+        roster, _ = self.store.roster()
+        s = summarise(roster, self.store.day(self.today))
+        self.assertEqual((s["total"]["P"], s["total"]["L"], s["total"]["A"], s["total"]["unmarked"]), (1, 1, 1, 1))
+        self.assertEqual([c["cls"] for c in s["classes"]], ["IX-A", "X-A", "XII-A"])      # school order, not alphabetical
+        wb = openpyxl.load_workbook(io.BytesIO(build_workbook(self.today, roster, self.store.day(self.today))))
+        self.assertEqual(wb.sheetnames[:3], ["Summary", "Absentees", "Late"])
+        absentees = [r[3] for r in wb["Absentees"].iter_rows(min_row=5, values_only=True)]
+        self.assertEqual(sorted(absentees), ["S3", "S4"])                                  # absent + not seen
+
+    def test_not_ready_without_settings(self):
+        with self.assertRaises(ValueError):
+            self.r.run(self.today)
+
+    def test_scheduler_sends_once_a_day(self):
+        self.configure()
+        self.r.tick(); self.r.tick()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("2/4 present", self.sent[0]["Subject"])
+
+    def test_manual_send_does_not_cancel_the_scheduled_one(self):
+        self.configure()
+        self.r.run(self.today)
+        self.r.tick()
+        self.assertEqual(len(self.sent), 2)
+
+    def test_skips_days_without_attendance(self):
+        self.configure()
+        import os
+        os.remove(os.path.join(self.store.days_dir, f"{self.today}.json"))
+        self.r.tick()
+        self.assertEqual(self.sent, [])
+
+    def test_password_is_never_returned(self):
+        self.configure()
+        self.assertNotIn("password", self.r.public_settings()["smtp"])
+        self.r.update_settings({"smtp": {"password": ""}})                                  # blank keeps the old one
+        self.assertEqual(self.r.settings["smtp"]["password"], "pw")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

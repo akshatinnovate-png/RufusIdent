@@ -495,3 +495,16 @@ img.ds-avatar { object-fit: cover; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ───────────── daily report settings ───────────── */
+.tab-body textarea { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 14px; font-weight: 400; resize: vertical; }
+.tab-body label.check { flex-direction: row; align-items: center; gap: 10px; font-size: 14px; }
+.tab-body label.check input { width: 18px; height: 18px; }
+.days { display: flex; gap: 6px; flex-wrap: wrap; }
+.days label { flex-direction: row; align-items: center; gap: 6px; background: #f3f4f6; padding: 6px 10px; border-radius: 999px; font-size: 13px; cursor: pointer; }
+.days input { margin: 0; }
+.inline { display: flex; gap: 8px; }
+.inline select { flex: 1; }
+#rpStatus.ok { color: var(--green-700); } #rpStatus.bad { color: #9a2f12; }
+.settings form { max-height: 92vh; }
+.settings .tab-body { overflow-y: auto; max-height: 62vh; }
