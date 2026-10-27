@@ -45,7 +45,7 @@ gallery = Gallery.load(cfg.data_dir)
 store = Store(cfg.data_dir)
 reporter = Reporter(cfg.data_dir, os.path.join(os.path.dirname(cfg.evidence_dir), "reports"), store)
 frame_lock = threading.Lock()          # one frame at a time keeps tracking consistent
-state = {"frames": 0, "learned": 0, "last_adapt_save": time.monotonic()}
+state = {"frames": 0, "learned": 0, "last_adapt_save": time.monotonic(), "verifying_near": False}
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
@@ -110,7 +110,9 @@ def frame(image: UploadFile = File(...), gate: str = Form("")):
         raise HTTPException(400, "Not an image")
     with frame_lock:
         state["frames"] += 1
-        far_scan = state["frames"] % cfg.far_scan_every == 1
+        # The far scan is the most expensive step: skip it while someone close is
+        # being verified, so their answer comes back sooner.
+        far_scan = state["frames"] % cfg.far_scan_every == 1 and not state["verifying_near"]
         faces = engine.scene(img, far_scan, tracker.small_boxes(cfg.near_px))
         tids = tracker.assign([f.box for f in faces])
 
@@ -130,6 +132,7 @@ def frame(image: UploadFile = File(...), gate: str = Form("")):
                 todo.append((f, item))
             out.append(item)
 
+        state["verifying_near"] = any(f.width >= cfg.near_px for f, _ in todo)
         engine.describe_many(img, [f for f, _ in todo], cfg.live_min_px)
         for f, item in todo:
             r = fusion.update(item["track"], f.emb, f.quality, f.width, f.live, gallery)

@@ -48,14 +48,27 @@ class Decisions(unittest.TestCase):
         return r
 
     def test_enrolled_student_is_matched_after_min_frames(self):
-        r = self.run_track([self.probe(5) for _ in range(10)])
+        r = self.run_track([self.probe(5) for _ in range(10)], cfg=Config(fast_track=False))
         self.assertEqual(r["status"], "match")
         self.assertEqual(r["student_id"], "1005")
         self.assertEqual(r["frames"], 3)
 
-    def test_single_frame_never_marks(self):
-        f = Fusion(Config())
+    def test_single_frame_never_marks_without_fast_track(self):
+        f = Fusion(Config(fast_track=False))
         self.assertEqual(f.update("t", self.probe(5), 1.0, 120, 0.95, self.g)["status"], "pending")
+
+    def test_fast_track_overwhelming_match_in_one_frame(self):
+        r = Fusion(Config()).update("t", self.probe(6, noise=0.01), 1.0, 150, 0.97, self.g)
+        self.assertEqual((r["status"], r["student_id"], r["frames"]), ("match", "1006", 1))
+
+    def test_fast_track_never_without_liveness_or_for_far_faces(self):
+        self.assertEqual(Fusion(Config()).update("t", self.probe(7, noise=0.01), 1.0, 150, 0.6, self.g)["status"], "pending")
+        self.assertEqual(Fusion(Config()).update("t", self.probe(7, noise=0.01), 1.0, 150, None, self.g)["status"], "pending")
+        self.assertEqual(Fusion(Config()).update("t", self.probe(7, noise=0.01), 1.0, 40, 0.97, self.g)["status"], "pending")
+
+    def test_fast_track_never_for_lookalikes(self):
+        r = Fusion(Config()).update("t", self.probe(0, noise=0.01), 1.0, 150, 0.97, self.g)
+        self.assertEqual(r["status"], "pending")
 
     def test_stranger_is_unknown(self):
         stranger = unit(rng.normal(size=512))
@@ -110,7 +123,7 @@ class Decisions(unittest.TestCase):
         self.assertEqual((r["status"], r["student_id"]), ("match", "1012"))
 
     def test_identity_switch_restarts_the_track(self):
-        f = Fusion(Config())
+        f = Fusion(Config(fast_track=False))
         f.update("t", self.probe(20), 1.0, 120, 0.95, self.g)
         f.update("t", self.probe(20), 1.0, 120, 0.95, self.g)
         r = f.update("t", self.probe(21), 1.0, 120, 0.95, self.g)      # tracker swapped people

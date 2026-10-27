@@ -127,6 +127,15 @@ class Fusion:
                 return self._decide(t, {**out, "status": "spoof", "reason": "face looks like a photo or screen"}, now)
             live_ok = not spoofing and (not (cfg.require_live and self.liveness) or (live_score is not None and live_score >= cfg.live_threshold))
 
+            # Fast track: the evidence is overwhelming, so fewer frames are needed.
+            # Never for look-alikes, far faces, or without a strong liveness check.
+            if cfg.fast_track and near and not lookalike and live_score is not None and live_score >= 0.85 and base >= t_accept:
+                if s1 >= t_accept + 0.20 and margin >= max(0.25, 3 * need_margin):
+                    need = 1
+                elif s1 >= t_accept + 0.10 and margin >= 2 * need_margin:
+                    need = min(need, 2)
+                out["need_frames"] = need
+
             confident = n >= need and s1 >= t_accept and base >= t_review and margin >= need_margin and share >= cfg.vote_share
             if confident and live_ok:
                 result = {**out, "status": "match"}

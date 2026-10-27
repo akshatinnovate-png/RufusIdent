@@ -20,7 +20,7 @@ class Config:
 
     # Detection
     det_size_enroll: int = 640
-    det_size_gate: int = 640        # every frame: faces down to ~30 px
+    det_size_gate: int = 512        # every frame: near and mid faces (the far scan finds the small ones)
     det_size_far: int = 1280        # far scan: faces down to ~18 px
     far_scan_every: int = 4         # frames between far scans
     det_thresh: float = 0.5
@@ -42,6 +42,7 @@ class Config:
 
     # Multi-frame fusion at the gate
     min_frames: int = 3             # near faces
+    fast_track: bool = True         # an overwhelming, live, near match needs only 1-2 frames
     min_frames_far: int = 5         # far faces: more frames averaged before deciding
     max_frames: int = 16
     switch_guard: float = 0.30      # a frame this unlike the track so far = a different person
