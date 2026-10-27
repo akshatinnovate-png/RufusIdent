@@ -2,7 +2,7 @@
   "photos_dir": "../photos",
   "roster_file": "../roster.xlsx",
   "evidence_dir": "C:/Users/<you>/OneDrive - Gulmohur High School/RufusIdent Evidence",
-  "port": 8000,
+  "port": 8899,
   "min_frames": 3,
   "antispoof": true,
   "live_threshold": 0.55

@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   lateAfter: '08:00',
   zone: 'square',
   fov: 78,
-  backendUrl: 'http://127.0.0.1:8000',
+  backendUrl: 'http://127.0.0.1:8899',
 };
 
 export const state = {
@@ -66,8 +66,8 @@ function changed() { version++; listeners.forEach(fn => fn()); }
 export async function load() {
   try { Object.assign(state.settings, JSON.parse(localStorage.getItem('ri.settings') || '{}')); } catch {}
   // A blank backend address must never switch recognition off.
-  // 'localhost' can resolve to IPv6 (::1) on Windows while the backend listens on 127.0.0.1.
-  if (!state.settings.backendUrl || /^https?:\/\/localhost:8000\/?$/.test(state.settings.backendUrl)) state.settings.backendUrl = DEFAULT_SETTINGS.backendUrl;
+  // Older defaults: 'localhost' (can resolve to IPv6 on Windows) and port 8000 (often taken by other programs).
+  if (!state.settings.backendUrl || /^https?:\/\/(localhost|127\.0\.0\.1):8000\/?$/.test(state.settings.backendUrl)) state.settings.backendUrl = DEFAULT_SETTINGS.backendUrl;
   const meta = (await idbGet('meta')) || {};
   state.demo = !!meta.demo;
   setRoster((await idbGet('roster')) || []);

@@ -224,7 +224,23 @@ def student(student_id: str):
             "learned_samples": int((gallery.adapt_owner == i).sum())}
 
 
+def _port_free(host: str, port: int) -> bool:
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
 if __name__ == "__main__":
+    if not _port_free(cfg.host, cfg.port):
+        print(f"\nPort {cfg.port} is already in use by another program (or another copy of this backend).\n"
+              f"  See what is using it:   netstat -ano | findstr :{cfg.port}\n"
+              f"  Or pick another port:   put {{\"port\": 8898}} in backend\\config.json and set\n"
+              f"                          Settings → Gate → backend URL to http://127.0.0.1:8898")
+        raise SystemExit(1)
     print(f"RufusIdent backend {VERSION} on http://{cfg.host}:{cfg.port}  ·  {engine.device}  ·  "
           f"{len(gallery.ids) if gallery else 0} students enrolled  ·  anti-spoof {'on' if engine.spoof else 'off'}")
     if gallery is None:

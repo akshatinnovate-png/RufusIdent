@@ -362,7 +362,7 @@ function saveSettingsForm() {
   data.saveSettings({
     groqKey: v('groqKey'), model: v('model') || 'openai/gpt-oss-120b',
     gateName: v('gateName') || 'Main Gate', cameraId: f.elements.cameraId.value, zone: f.elements.zone.value, fov: Number(v('fov')) || 78,
-    lateAfter: v('lateAfter') || '08:00', backendUrl: v('backendUrl') || 'http://127.0.0.1:8000',
+    lateAfter: v('lateAfter') || '08:00', backendUrl: v('backendUrl') || 'http://127.0.0.1:8899',
   });
   toast('Settings saved');
 }

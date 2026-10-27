@@ -14,7 +14,7 @@ class Config:
     models_dir: str = os.path.join(HERE, "models")
     evidence_dir: str = os.path.join(HERE, "evidence")      # point this at the OneDrive folder
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 8899                                         # 8000 is often taken by other programs
     threads: int = 0                                         # 0 = one per physical core (ONNX Runtime default)
     provider: str = "auto"          # auto | cpu | directml (Windows integrated graphics)
 
