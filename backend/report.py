@@ -14,7 +14,7 @@ import ssl
 import threading
 import time
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule
@@ -213,7 +213,10 @@ def compose(settings: dict, date: str, roster: list[dict], records: dict, demo: 
     smtp = settings["smtp"]
     msg["From"] = formataddr((smtp.get("from_name") or "RufusIdent", smtp["username"]))
     msg["To"] = ", ".join(settings["recipients"])
-    msg["Message-ID"] = make_msgid(domain="rufusident.local")
+    # A real Date and a Message-ID on the sender's own domain: mail without them is
+    # often quarantined silently by school / Microsoft 365 mail filters.
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=smtp["username"].rpartition("@")[2] or None)
 
     low = [c for c in s["classes"] if c["pct"] < 85]
     text = [f"{SCHOOL} — attendance for {day.strftime('%A, %d %B %Y')}", "",
@@ -266,7 +269,8 @@ def send(settings: dict, msg: EmailMessage):
             server.starttls(context=ctx)
         if smtp.get("username") and password:
             server.login(smtp["username"], password)
-        server.send_message(msg)
+        refused = server.send_message(msg)
+    return refused or {}
 
 
 def friendly_error(e: Exception) -> str:
@@ -380,16 +384,25 @@ class Reporter:
                 msg.replace_header("Subject", "[TEST] " + msg["Subject"])
             self.state["last_attempt"] = time.time()
             try:
-                send(self.settings, msg)
+                refused = send(self.settings, msg) or {}
             except Exception as e:
                 self.state["last_error"] = friendly_error(e)
                 self._log(date, False, self.state["last_error"], auto, test)
                 raise RuntimeError(self.state["last_error"]) from e
+            accepted = [r for r in self.settings["recipients"] if r not in refused]
+            if not accepted:
+                self.state["last_error"] = "The mail server refused every recipient: " + ", ".join(refused)
+                self._log(date, False, self.state["last_error"], auto, test)
+                raise RuntimeError(self.state["last_error"])
             self.state["last_error"] = None
             if auto:
                 self.state["last_sent_date"] = date      # a manual send never cancels the scheduled one
-            self._log(date, True, f"sent to {len(self.settings['recipients'])} recipient(s)", auto, test)
-            return {"ok": True, "date": date, "recipients": self.settings["recipients"], "saved": copy, "subject": msg["Subject"]}
+            detail = f"accepted by {self.settings['smtp']['host']} for {', '.join(accepted)}"
+            if refused:
+                detail += f" · REFUSED: {', '.join(refused)}"
+            self._log(date, True, detail, auto, test)
+            return {"ok": True, "date": date, "recipients": accepted, "refused": list(refused), "saved": copy,
+                    "subject": msg["Subject"], "message_id": msg["Message-ID"]}
 
     def _log(self, date, ok, detail, auto, test):
         self.state["history"].append({"at": dt.datetime.now().isoformat(timespec="seconds"), "date": date, "ok": ok,

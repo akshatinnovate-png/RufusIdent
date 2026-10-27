@@ -344,7 +344,8 @@ async function reportAction(act) {
       status.textContent = 'Sending…'; status.className = 'note';
       await syncNow();                      // make sure the latest marks are on the backend
       const r = await backendJson('/report/send', { test: act === 'rp-test' });
-      toast(`Sent to ${r.recipients.join(', ')}`);
+      toast(`Mail server accepted it for ${r.recipients.join(', ')}. It can take a few minutes to arrive.`);
+      if (r.refused?.length) toast(`Refused (check the spelling): ${r.refused.join(', ')}`, { kind: 'warn' });
     }
   } catch (e) {
     toast(e.message, { kind: 'warn' });
