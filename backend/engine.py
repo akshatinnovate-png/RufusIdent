@@ -30,11 +30,12 @@ MODEL_FILES = {
 PROVIDERS = ["CPUExecutionProvider"]
 
 
-def _session(path: str, threads: int, providers: list[str] | None = None) -> ort.InferenceSession:
+def _session(path: str, threads: int, providers: list[str] | None = None, quiet: bool = False) -> ort.InferenceSession:
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    opts.intra_op_num_threads = threads or (os.cpu_count() or 4)
-    opts.log_severity_level = 3
+    if threads:
+        opts.intra_op_num_threads = threads   # otherwise ONNX Runtime uses one thread per physical core (fastest on laptops)
+    opts.log_severity_level = 4 if quiet else 3
     return ort.InferenceSession(path, opts, providers=providers or PROVIDERS)
 
 
@@ -48,7 +49,7 @@ def pick_providers(cfg: Config, embedder_path: str) -> tuple[list[str], str]:
     results = {}
     for name, prov in (("CPU", ["CPUExecutionProvider"]), ("DirectML", ["DmlExecutionProvider", "CPUExecutionProvider"])):
         try:
-            sess = _session(embedder_path, cfg.threads, prov)
+            sess = _session(embedder_path, cfg.threads, prov, quiet=True)
             inp = sess.get_inputs()[0].name
             out = sess.run(None, {inp: face})[0]
             t = time.perf_counter()

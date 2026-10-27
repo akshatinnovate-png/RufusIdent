@@ -15,7 +15,7 @@ class Config:
     evidence_dir: str = os.path.join(HERE, "evidence")      # point this at the OneDrive folder
     host: str = "127.0.0.1"
     port: int = 8000
-    threads: int = 0                                         # 0 = all CPU cores
+    threads: int = 0                                         # 0 = one per physical core (ONNX Runtime default)
     provider: str = "auto"          # auto | cpu | directml (Windows integrated graphics)
 
     # Detection

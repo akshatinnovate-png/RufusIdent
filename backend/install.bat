@@ -11,9 +11,8 @@ if not exist .venv python -m venv .venv
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt || (pause & exit /b 1)
-rem Use the laptop's built-in graphics (DirectML) when possible; the backend checks it is faster and gives identical results.
-pip uninstall -y onnxruntime >nul 2>nul
-pip install onnxruntime-directml || pip install onnxruntime
+rem Optional: 'pip install onnxruntime-directml' (after uninstalling onnxruntime) tries the laptop's built-in graphics;
+rem the backend only uses it if it is faster and gives identical results. Plain onnxruntime is the safe default.
 python setup_models.py || (pause & exit /b 1)
 python benchmark.py
 echo.
