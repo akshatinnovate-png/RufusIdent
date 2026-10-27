@@ -1,3 +1,12 @@
 __pycache__/
 *.xlsx
 backup*.json
+
+# Student photos and face data must never be committed.
+photos/
+backend/data/
+backend/evidence/
+backend/models/
+backend/.venv/
+backend/config.json
+roster.*

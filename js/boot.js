@@ -18,9 +18,17 @@ async function checkBackend() {
   const url = state.settings.backendUrl;
   if (!url) return warn('not configured · gate runs in manual-mark mode');
   try {
-    const res = await withTimeout(fetch(url.replace(/\/$/, '') + '/health'), 3000, 'backend');
+    // start.bat launches the backend at the same time; give it a few seconds to load its models.
+    let res, lastErr;
+    for (let i = 0; i < 8 && !res; i++) {
+      try { res = await withTimeout(fetch(url.replace(/\/$/, '') + '/health'), 2000, 'backend'); }
+      catch (e) { lastErr = e; await new Promise(r => setTimeout(r, 1000)); }
+    }
+    if (!res) throw lastErr;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return `online · ${url}`;
+    const h = await res.json();
+    if (!h.students) return warn('online but no students enrolled · run backend/enroll.py');
+    return `online · ${h.students.toLocaleString('en-IN')} students · ${h.photos.toLocaleString('en-IN')} photos · anti-spoof ${h.antispoof ? 'on' : 'off'}`;
   } catch (e) {
     return warn(`unreachable (${e.message}) · manual mode`);
   }

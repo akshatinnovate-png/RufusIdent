@@ -268,9 +268,8 @@ function saveSettingsForm() {
   const v = n => f.elements[n].value.trim();
   data.saveSettings({
     groqKey: v('groqKey'), model: v('model') || 'openai/gpt-oss-120b',
-    gateName: v('gateName') || 'Main Gate', cameraId: f.elements.cameraId.value,
+    gateName: v('gateName') || 'Main Gate', cameraId: f.elements.cameraId.value, zone: f.elements.zone.value,
     lateAfter: v('lateAfter') || '08:00', backendUrl: v('backendUrl'),
-    autoAccept: Number(v('autoAccept')) || 0.9, reviewFloor: Number(v('reviewFloor')) || 0.6,
   });
   toast('Settings saved');
 }

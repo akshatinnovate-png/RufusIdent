@@ -15,7 +15,7 @@ It has five screens:
 1. Double-click **`start.bat`**.
    - It starts a local server: Python if it is installed, otherwise the built-in PowerShell server in `serve.ps1`.
    - It then opens the app in Edge at `http://localhost:8765`.
-2. Allow camera access the first time.
+2. Allow camera access the first time. (Set up the recognition backend below first, or the gate runs in manual-mark mode.)
 3. Open **Settings**:
    - **Assistant:** paste your Groq API key.
    - **Gate:** pick the camera and set the "late after" time.
@@ -32,19 +32,68 @@ The face engine (MediaPipe) and the Excel library are bundled in `vendor/`, so t
 - Header names are matched loosely ("Adm No", "Student Name" and "Std" all work).
 - `photo` is optional. Put photos in a `photos/` folder next to `index.html`.
 
-## Recognition backend contract (to build next)
+## Recognition backend (`backend/`)
 
-The browser finds and quality-checks faces. Matching a face to a student happens on the backend.
+The browser tracks faces at camera speed. The backend decides **who** each face is. It runs fully offline on the laptop's CPU; no graphics card is needed.
+
+### Set up (once, on the gate laptop)
+
+1. Install Python 3.10 or newer from python.org (tick "Add python.exe to PATH").
+2. Double-click **`backend/install.bat`**.
+   - It creates a virtual environment and installs the packages.
+   - It downloads the models (about 300 MB) and checks their checksums.
+   - It then benchmarks the laptop.
+3. Put each student's photos in `photos/<admission_no>/`. Aim for about 20 per student: different days, light and angles, with and without specs.
+4. Double-click **`backend/enroll.bat`**.
+   - The first run on 3,200 × 20 photos takes a few hours. Run it overnight.
+   - It can be stopped and resumed. Later runs only process new or changed photos.
+5. `start.bat` now starts the backend automatically.
+
+Optional: copy `backend/config.example.json` to `backend/config.json`. Point `evidence_dir` at the OneDrive folder so every decision's photo syncs automatically.
+
+### How a student is recognised
+
+| Stage | What it does | Why |
+|---|---|---|
+| Detection zone | The browser's face tracker looks at the centre square of the frame (the gate lane). | Its model is short-range; cropping makes a student 2 m away look about 1.8× bigger. |
+| Quality gate (browser) | A frame is only sent if the face is big enough, frontal and well lit. Light is measured on the face, not the background. | Bad frames never reach the matcher. |
+| Detector | SCRFD-10G re-detects the face and its 5 landmarks. | Same detector as enrolment, so faces line up identically. |
+| Alignment | A similarity transform to the ArcFace 112×112 template. | Removes tilt and scale. |
+| Embedding | ArcFace ResNet-50 trained on WebFace600K (InsightFace `buffalo_l`). | A strong open face-recognition model. |
+| Gallery | About 20 photos per student. A student's score is the mean of their **best 3** photo matches. | One lucky photo can't win; one bad photo can't lose. |
+| Liveness | Two anti-spoof models (MiniFASNetV2 + V1SE) look at the face and its surroundings. | Catches a printed photo or a phone screen held up to the camera. |
+| Multi-frame fusion | Each person gets a track. Frames are quality-weighted and averaged, and every frame also votes. | A single odd frame can't mark anyone. |
+| Decision | **Match** only if: the fused score ≥ the calibrated threshold, the best student beats the runner-up by a clear margin (doubled for look-alikes), they win most of the frame votes, and the face is live. | |
+| Otherwise | **Review**, **Unknown** or **Spoof**. | A teacher confirms with one tap; nobody is marked silently. |
+
+### What `enroll.py` checks for you
+
+It writes `backend/data/enroll_report.csv` and flags:
+- **Rejected photos:** no face, several faces, too small, blurry, or head turned away.
+- **Misfiled photos:** a photo that doesn't resemble the rest of the student's folder, or looks more like a different student.
+- **Thin galleries:** students with fewer than 8 usable photos.
+- **Look-alikes:** siblings or twins. The gate is stricter between these students.
+- **Calibration:** the accept and review thresholds are set from the school's own photos. Every photo is tested against every other student, and the report gives the genuine-pass rate and the impostor-pass rate.
+
+### API
 
 ```
-GET  {backend}/health               -> 200
-POST {backend}/recognize            multipart: image=face.jpg (320×320), gate=<name>
-     -> {"student_id": "24001", "confidence": 0.97}
-     -> {"student_id": null, "confidence": 0}   (unknown face)
+GET  /health                  enrolled students, photos, thresholds
+POST /recognize               multipart: image (face crop), track, gate
+     -> {status: pending|match|review|unknown|spoof|no_face|low_quality,
+         student_id, score, margin, confidence, live, frames, candidates[], ms}
+POST /reload                  reload after enrolling (enroll.py calls it)
+GET  /photo/{admission_no}    best enrolment photo (used on datasheets)
+GET  /student/{admission_no}  photo count, look-alikes
 ```
 
-- Scores at or above **auto-accept** (default 0.90) mark the student present, or late after the cut-off.
-- Scores between **review** (0.60) and auto-accept go to the on-screen review queue.
+### Evidence photos
+
+Every decision saves the frame:
+- Matches go to `evidence/<date>/<admission_no>_<time>.jpg`.
+- Unsure, unknown and spoof attempts go to the `_review`, `_unknown` and `_spoof` subfolders.
+
+This is a few MB a day, not every frame.
 
 ## Where data lives today
 
@@ -54,11 +103,13 @@ Attendance is stored in the browser's IndexedDB on the gate laptop. Use **Settin
 
 ## Privacy
 
-This system processes face data of minors.
+This system processes face data of minors. Photos, face embeddings and evidence stay on the laptop (and your OneDrive), and `.gitignore` keeps them out of git.
 
 - Get written approval from school management, and parent consent where required (India's DPDP Act 2023 has specific rules for children's data).
 - Restrict who can open the evidence folder.
 - Treat the Groq API key as a password; it should move to the backend before going live.
+
+Model licences: the InsightFace `buffalo_l` models are released for **non-commercial research use**, which fits a school's own attendance system but check with InsightFace before any commercial use. MiniFASNet (anti-spoof) and MediaPipe are Apache-2.0.
 
 ---
 

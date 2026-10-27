@@ -4,11 +4,13 @@
 import { state, mark, undo, recordFor, arrivalStatus, daySummary, getDay, search, classKey, studentStats, onChange, STATUS } from './data.js';
 import { $, esc, avatar, toast, pct } from './ui.js';
 
-const MIN_FACE_PX = 120;      // face width in camera pixels before we try to identify
+const MIN_FACE_PX = 90;       // face width in camera pixels before we try to identify (ArcFace uses 112px)
 const MAX_YAW = 0.18;         // how far the head may turn (0 = straight on)
 const LOW_LIGHT = 55, GLARE = 215;
-const REQUEST_GAP_MS = 700;
-const SAME_STUDENT_MS = 8000;
+const REQUEST_GAP_MS = 40;     // up to ~25 frames a second to the backend
+const MAX_INFLIGHT = 2;        // keep the backend busy while the next frame is cropped
+const RETRY_MS = 3000;         // after 'unknown'/'review'/'spoof', try again with a fresh track
+const CROP_PX = 512;
 
 let vision, engine, enginePromise, delegate = '', TESS = [];
 
@@ -68,8 +70,7 @@ let running = false;
 let lastVT = -1, lastT = 0, fps = 0, frame = 0;
 let light = 0;
 const lightHist = [];
-let inflight = false, lastReq = 0;
-const lastSeen = new Map();
+let inflight = 0, lastReq = 0;
 const review = [];
 let video, canvas, ctx;
 
@@ -103,6 +104,7 @@ export async function openCamera() {
   }
   $('#mEngine').textContent = delegate;
   $('#mMatcher').textContent = state.settings.backendUrl ? 'BACKEND' : 'OFFLINE';
+  $('#mLive').textContent = '—'; $('#mVerify').textContent = '—';
   setStatus(state.settings.backendUrl ? 'LIVE · SCANNING' : 'LIVE · MANUAL MODE', 'ok');
   running = true;
   resize();
@@ -158,32 +160,60 @@ function loop() {
   if (lastT) fps = fps ? fps * 0.9 + (1000 / (now - lastT)) * 0.1 : 1000 / (now - lastT);
   lastT = now;
 
+  const z = zone();
   let res;
-  try { res = engine.detectForVideo(video, now); } catch { return; }
-  if (++frame % 6 === 0) sampleLight();
+  try { res = engine.detectForVideo(zoneImage(z), now); } catch { return; }
+  const faces = (res.faceLandmarks || []).map(lm => describe(lm, z));
+  faces.sort((a, b) => b.w - a.w);
+  if (++frame % 6 === 0) sampleLight(faces[0]);
   if (frame % 10 === 0) $('#mFps').textContent = fps.toFixed(1);
 
-  const faces = (res.faceLandmarks || []).map(lm => describe(lm));
-  faces.sort((a, b) => b.w - a.w);
   $('#mFaces').textContent = faces.length;
   evaluate(faces);
   draw(faces);
 }
 
-function describe(lm) {
+// The detector only looks at the gate lane: a centre square of the frame.
+// The browser's face model is short-range, so cropping makes a student 2 m
+// away look ~1.8x bigger to it.
+const ZONES = { square: 1, tight: 0.6 };
+
+function zone() {
   const vw = video.videoWidth, vh = video.videoHeight;
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
-  for (const p of lm) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
-  const l = lm[33], r = lm[263], nose = lm[1];
-  const eyeDist = Math.hypot(r.x - l.x, r.y - l.y) || 1e-6;
-  const yaw = (nose.x - (l.x + r.x) / 2) / eyeDist;
-  return { lm, x: x0 * vw, y: y0 * vh, w: (x1 - x0) * vw, h: (y1 - y0) * vh, yaw };
+  const k = ZONES[state.settings.zone];
+  if (!k) return { x: 0, y: 0, w: vw, h: vh, full: true };
+  const side = Math.min(vw, vh) * k;
+  return { x: (vw - side) / 2, y: (vh - side) / 2, w: side, h: side };
 }
 
-function sampleLight() {
+let zoneCanvas;
+function zoneImage(z) {
+  if (z.full) return video;
+  zoneCanvas ||= document.createElement('canvas');
+  const px = Math.round(Math.min(z.w, 960));
+  if (zoneCanvas.width !== px) zoneCanvas.width = zoneCanvas.height = px;
+  zoneCanvas.getContext('2d').drawImage(video, z.x, z.y, z.w, z.h, 0, 0, px, px);
+  return zoneCanvas;
+}
+
+// Landmarks converted to camera pixels.
+function describe(lm, z) {
+  const pts = lm.map(p => ({ x: z.x + p.x * z.w, y: z.y + p.y * z.h }));
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+  const l = pts[33], r = pts[263], nose = pts[1];
+  const eyeDist = Math.hypot(r.x - l.x, r.y - l.y) || 1e-6;
+  const yaw = (nose.x - (l.x + r.x) / 2) / eyeDist;
+  return { lm: pts, x: x0, y: y0, w: x1 - x0, h: y1 - y0, yaw };
+}
+
+// Light is measured on the face when there is one (a dark corridor behind a
+// well-lit student is fine), otherwise on the whole frame.
+function sampleLight(face) {
   const c = sampleLight.c ||= Object.assign(document.createElement('canvas'), { width: 64, height: 36 });
   const g = c.getContext('2d', { willReadFrequently: true });
-  g.drawImage(video, 0, 0, 64, 36);
+  if (face) g.drawImage(video, face.x + face.w * 0.2, face.y + face.h * 0.15, face.w * 0.6, face.h * 0.7, 0, 0, 64, 36);
+  else g.drawImage(video, 0, 0, 64, 36);
   const d = g.getImageData(0, 0, 64, 36).data;
   let sum = 0;
   for (let i = 0; i < d.length; i += 4) sum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
@@ -223,12 +253,25 @@ function mapper() {
   return { s, pt: (x, y) => [cw - (x * s + ox), y * s + oy] };
 }
 
+function drawZone(pt) {
+  const z = zone();
+  if (z.full) return;
+  const [ax, ay] = pt(z.x + z.w, z.y), [bx, by] = pt(z.x, z.y + z.h);
+  const c = (bx - ax) * 0.06;
+  ctx.strokeStyle = 'rgba(79,216,255,.35)'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+  ctx.beginPath();
+  for (const [x, y, dx, dy] of [[ax, ay, 1, 1], [bx, ay, -1, 1], [bx, by, -1, -1], [ax, by, 1, -1]]) {
+    ctx.moveTo(x, y + dy * c); ctx.lineTo(x, y); ctx.lineTo(x + dx * c, y);
+  }
+  ctx.stroke();
+}
+
 function draw(faces) {
   const cw = canvas.clientWidth, ch = canvas.clientHeight;
   ctx.clearRect(0, 0, cw, ch);
-  if (!faces.length) return;
   const { s, pt } = mapper();
-  const vw = video.videoWidth, vh = video.videoHeight;
+  drawZone(pt);
+  if (!faces.length) return;
 
   faces.forEach((f, i) => {
     const primary = i === 0;
@@ -244,13 +287,13 @@ function draw(faces) {
       ctx.beginPath();
       for (const { start, end } of TESS) {
         const a = f.lm[start], b = f.lm[end];
-        const [x1, y1] = pt(a.x * vw, a.y * vh), [x2, y2] = pt(b.x * vw, b.y * vh);
+        const [x1, y1] = pt(a.x, a.y), [x2, y2] = pt(b.x, b.y);
         ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
       }
       ctx.stroke();
       ctx.fillStyle = '#ff5ad1';
       for (const k of [33, 263, 1, 61, 291, 152, 10]) {
-        const [x, y] = pt(f.lm[k].x * vw, f.lm[k].y * vh);
+        const [x, y] = pt(f.lm[k].x, f.lm[k].y);
         ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
       }
     }
@@ -280,13 +323,32 @@ function draw(faces) {
 
 // ───────────── quality + recognition ─────────────
 
+// One track = one person walking up to the camera. Every good frame of the
+// track is streamed to the backend, which fuses them and answers 'match'
+// only when several frames agree (see backend/fusion.py).
+let track = null;
+
+function trackFor(f) {
+  const now = performance.now();
+  const cx = f.x + f.w / 2;
+  const fresh = !track
+    || now - track.seen > 1500                         // face left the frame
+    || Math.abs(cx - track.cx) > f.w * 0.6             // a different person stepped in
+    || f.w < track.w * 0.5
+    || (track.decided && track.decided !== 'match' && now - track.decidedAt > RETRY_MS);
+  if (fresh) track = { id: Math.random().toString(36).slice(2, 10), cx, w: f.w, seen: now, frames: 0, need: 3, decided: null, decidedAt: 0 };
+  track.cx = cx; track.w = f.w; track.seen = now;
+  return track;
+}
+
 function evaluate(faces) {
   if (!faces.length) {
     $('#mSize').textContent = '—'; $('#mPose').textContent = '—'; $('#mQuality').textContent = 'NO FACE';
-    prompt('STAND IN FRONT OF THE CAMERA');
+    if (!(banner && performance.now() < banner.until)) prompt('STAND IN FRONT OF THE CAMERA');
     return;
   }
   const f = faces[0];
+  const t = trackFor(f);
   const turned = Math.abs(f.yaw) > MAX_YAW;
   let q = 'ok', msg;
   if (f.w < MIN_FACE_PX) { q = 'far'; msg = 'STEP CLOSER'; }
@@ -294,78 +356,96 @@ function evaluate(faces) {
   else if (light < LOW_LIGHT) { q = 'dark'; msg = 'TOO DARK · CHECK GATE LIGHTING'; }
   else if (light > GLARE) { q = 'glare'; msg = 'TOO BRIGHT · CAMERA FACING LIGHT'; }
   f.quality = q;
-  f.label = q === 'ok' ? (state.settings.backendUrl ? 'IDENTIFYING…' : 'FACE OK') : msg;
+  const backend = !!state.settings.backendUrl;
+  f.label = q !== 'ok' ? msg
+    : !backend ? 'FACE OK'
+    : t.decided === 'match' && t.name ? t.name.toUpperCase()
+    : t.decided ? t.decided.toUpperCase()
+    : `VERIFYING ${Math.min(t.frames, t.need)}/${t.need}`;
 
   $('#mSize').textContent = `${Math.round(f.w)} px`;
   $('#mPose').textContent = turned ? `TURNED ${f.yaw > 0 ? 'L' : 'R'}` : 'FRONTAL';
   $('#mQuality').textContent = q === 'ok' ? 'GOOD' : q.toUpperCase();
+  $('#mVerify').textContent = backend ? (t.decided ? t.decided.toUpperCase() : `${t.frames}/${t.need} FRAMES`) : '—';
 
   if (banner && performance.now() < banner.until) { prompt(banner.text, banner.kind); return; }
   if (q !== 'ok') { prompt(msg, 'warn'); return; }
   if (faces.length > 1 && faces[1].w > MIN_FACE_PX) prompt('ONE STUDENT AT A TIME, PLEASE', 'warn');
-  else if (!state.settings.backendUrl) prompt('FACE OK · RECOGNITION OFFLINE · USE MANUAL MARK', 'warn');
-  else prompt('HOLD STILL…', 'ok');
+  else if (!backend) prompt('FACE OK · RECOGNITION OFFLINE · USE MANUAL MARK', 'warn');
+  else if (!t.decided) prompt(t.frames ? `VERIFYING ${Math.min(t.frames, t.need)}/${t.need} · HOLD STILL` : 'HOLD STILL…', 'ok');
+  else if (t.decided === 'match') prompt('MARKED ✓ · PLEASE MOVE ON', 'ok');
 
-  if (state.settings.backendUrl && !inflight && performance.now() - lastReq > REQUEST_GAP_MS) recognise(f);
+  if (backend && !t.decided && inflight < MAX_INFLIGHT && performance.now() - lastReq > REQUEST_GAP_MS) recognise(f, t);
 }
 
+// A square crop with plenty of context around the face: the anti-spoof
+// models look at the area around the face (up to 4x its size).
 function cropFace(f) {
-  const side = Math.max(f.w, f.h) * 1.5;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const side = Math.min(Math.max(f.w, f.h) * 3.2, vw, vh);
   const cx = f.x + f.w / 2, cy = f.y + f.h / 2;
+  const x0 = Math.min(Math.max(cx - side / 2, 0), vw - side);
+  const y0 = Math.min(Math.max(cy - side / 2, 0), vh - side);
   const c = document.createElement('canvas');
-  c.width = c.height = 320;
-  c.getContext('2d').drawImage(video, cx - side / 2, cy - side / 2, side, side, 0, 0, 320, 320);
+  c.width = c.height = CROP_PX;
+  c.getContext('2d').drawImage(video, x0, y0, side, side, 0, 0, CROP_PX, CROP_PX);
   return c;
 }
 
-async function recognise(f) {
-  inflight = true;
+async function recognise(f, t) {
+  inflight++;
   lastReq = performance.now();
   try {
     const crop = cropFace(f);
-    const blob = await new Promise(r => crop.toBlob(r, 'image/jpeg', 0.92));
+    const blob = await new Promise(r => crop.toBlob(r, 'image/jpeg', 0.9));
     const fd = new FormData();
     fd.append('image', blob, 'face.jpg');
+    fd.append('track', t.id);
     fd.append('gate', state.settings.gateName);
-    const res = await fetch(state.settings.backendUrl.replace(/\/$/, '') + '/recognize', { method: 'POST', body: fd, signal: AbortSignal.timeout(4000) });
+    const res = await fetch(state.settings.backendUrl.replace(/\/$/, '') + '/recognize', { method: 'POST', body: fd, signal: AbortSignal.timeout(5000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
-    const id = j.student_id ?? j.match?.student_id ?? null;
-    const conf = Number(j.confidence ?? j.match?.confidence ?? 0);
-    await handleMatch(id != null ? String(id) : null, conf, crop.toDataURL('image/jpeg', 0.8));
-    $('#mMatcher').textContent = 'BACKEND · OK';
+    $('#mMatcher').textContent = `BACKEND · ${j.ms ?? '?'} ms`;
+    if (j.live != null) $('#mLive').textContent = `${Math.round(j.live * 100)}%`;
+    if (t !== track || t.decided) return;              // an answer for someone who already left
+    if (j.frames) { t.frames = j.frames; t.need = j.need_frames || t.need; }
+    if (['match', 'review', 'unknown', 'spoof'].includes(j.status)) {
+      t.decided = j.status;
+      t.decidedAt = performance.now();
+      await handleResult(j, t, crop);
+    }
   } catch (e) {
     $('#mMatcher').textContent = `BACKEND · ${e.name === 'TimeoutError' ? 'TIMEOUT' : 'ERROR'}`;
   } finally {
-    inflight = false;
+    inflight--;
   }
 }
 
-async function handleMatch(id, conf, img) {
-  const { autoAccept, reviewFloor } = state.settings;
-  const s = id && state.byId.get(id);
-  if (!s || conf < reviewFloor) {
-    flash('NOT RECOGNISED · PLEASE SEE THE TEACHER', 'bad', 1500);
-    return;
-  }
-  if (Date.now() - (lastSeen.get(id) || 0) < SAME_STUDENT_MS) return;
-  lastSeen.set(id, Date.now());
+async function handleResult(j, t, crop) {
+  const img = () => crop.toDataURL('image/jpeg', 0.8);
+  const s = j.student_id && state.byId.get(String(j.student_id));
 
-  if (conf < autoAccept) {
-    if (!review.some(r => r.id === id)) review.unshift({ id, conf, img });
+  if (j.status === 'spoof') { flash('LIVE FACE NEEDED · PHOTO OR SCREEN DETECTED', 'bad', 2500); buzz(); return; }
+  if (j.status === 'unknown') { flash('NOT RECOGNISED · PLEASE SEE THE TEACHER', 'bad', 2000); return; }
+  if (!s) { flash(`ID ${j.student_id} IS ENROLLED BUT NOT IN THE ROSTER`, 'bad', 2500); return; }
+
+  if (j.status === 'review') {
+    if (!review.some(r => r.id === s.id)) review.unshift({ id: s.id, conf: j.confidence ?? 0, img: img(), reason: j.reason || '' });
     renderReview();
-    flash('PLEASE WAIT · CHECKING', 'warn', 1500);
+    flash('PLEASE WAIT · TEACHER WILL CONFIRM', 'warn', 1800);
     return;
   }
-  const existing = recordFor(id);
+
+  t.name = s.name;
+  const existing = recordFor(s.id);
   if (existing && existing.s !== 'A') {
-    showIdent(s, existing, conf, img, true);
+    showIdent(s, existing, j.confidence, img(), true);
     flash(`${s.name.toUpperCase()} · ALREADY MARKED ${existing.t}`, 'ok', 2000);
     return;
   }
   const status = arrivalStatus();
-  await mark([id], status, { source: 'cam', confidence: conf });
-  showIdent(s, recordFor(id), conf, img, false);
+  await mark([s.id], status, { source: 'cam', confidence: j.confidence });
+  showIdent(s, recordFor(s.id), j.confidence, img(), false);
   flash(`WELCOME, ${s.name.split(' ')[0].toUpperCase()} · ${STATUS[status].toUpperCase()}`, 'ok', 2200);
   beep();
 }
@@ -376,15 +456,17 @@ function flash(text, kind, ms) {
 }
 
 let audio;
-function beep() {
+function tone(freq, secs, vol = 0.08) {
   try {
     audio ||= new AudioContext();
     const o = audio.createOscillator(), g = audio.createGain();
-    o.frequency.value = 880; g.gain.value = 0.08;
+    o.frequency.value = freq; g.gain.value = vol;
     o.connect(g).connect(audio.destination);
-    o.start(); o.stop(audio.currentTime + 0.12);
+    o.start(); o.stop(audio.currentTime + secs);
   } catch {}
 }
+const beep = () => tone(880, 0.12);
+const buzz = () => tone(180, 0.35, 0.12);
 
 // ───────────── side panels ─────────────
 
@@ -437,7 +519,7 @@ function renderReview() {
     const s = state.byId.get(r.id);
     return `<div class="rv">
       <img src="${r.img}" alt="">
-      <div><b>${esc(s.name)}</b><span>${esc(classKey(s))} · ${(r.conf * 100).toFixed(0)}% match</span></div>
+      <div><b>${esc(s.name)}</b><span>${esc(classKey(s))} · ${(r.conf * 100).toFixed(0)}%${r.reason ? ` · ${esc(r.reason)}` : ''}</span></div>
       <button data-rv="ok" data-i="${i}" title="Confirm">✓</button>
       <button data-rv="no" data-i="${i}" title="Not this student">✕</button>
     </div>`;

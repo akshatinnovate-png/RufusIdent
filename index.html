@@ -218,6 +218,8 @@
         <dt>SIZE</dt><dd id="mSize">—</dd>
         <dt>POSE</dt><dd id="mPose">—</dd>
         <dt>QUALITY</dt><dd id="mQuality">—</dd>
+        <dt>LIVENESS</dt><dd id="mLive">—</dd>
+        <dt>VERIFY</dt><dd id="mVerify">—</dd>
       </dl>
     </div>
   </aside>
@@ -281,13 +283,16 @@
     <div class="tab-body" data-body="gate" hidden>
       <label>Gate name <input name="gateName" placeholder="Main Gate"></label>
       <label>Camera <select name="cameraId"><option value="">Default camera</option></select></label>
+      <label>Detection area
+        <select name="zone">
+          <option value="square">Centre square (recommended)</option>
+          <option value="tight">Tight centre (students far from camera)</option>
+          <option value="full">Full frame</option>
+        </select>
+      </label>
       <label>Mark “Late” after <input type="time" name="lateAfter"></label>
       <label>Recognition backend URL <input name="backendUrl" placeholder="http://localhost:8000"></label>
-      <div class="two">
-        <label>Auto-accept at ≥ <input type="number" name="autoAccept" step="0.01" min="0.5" max="1"></label>
-        <label>Send to review at ≥ <input type="number" name="reviewFloor" step="0.01" min="0" max="1"></label>
-      </div>
-      <p class="note">Recognition runs on the backend. Matches under the auto-accept score go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
+      <p class="note">Recognition runs on the backend (<code>backend/server.py</code>, usually <code>http://localhost:8000</code>). Its thresholds are calibrated from the students' own photos when you run <code>enroll.py</code>. Unsure matches go to “Needs review” on the gate screen, so a wrong student is never marked silently.</p>
     </div>
     <div class="tab-body" data-body="data" hidden>
       <label>Import student roster (.xlsx or .csv)
