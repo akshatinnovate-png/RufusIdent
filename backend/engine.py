@@ -27,12 +27,51 @@ MODEL_FILES = {
 }
 
 
-def _session(path: str, threads: int) -> ort.InferenceSession:
+PROVIDERS = ["CPUExecutionProvider"]
+
+
+def _session(path: str, threads: int, providers: list[str] | None = None) -> ort.InferenceSession:
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     opts.intra_op_num_threads = threads or (os.cpu_count() or 4)
     opts.log_severity_level = 3
-    return ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
+    return ort.InferenceSession(path, opts, providers=providers or PROVIDERS)
+
+
+def pick_providers(cfg: Config, embedder_path: str) -> tuple[list[str], str]:
+    """Use the laptop's built-in graphics through DirectML (Windows) when it is
+    available, gives the same answers as the CPU, and is actually faster."""
+    if cfg.provider == "cpu" or "DmlExecutionProvider" not in ort.get_available_providers():
+        return ["CPUExecutionProvider"], "CPU"
+    import time
+    face = np.random.default_rng(0).integers(0, 255, (4, 3, 112, 112)).astype(np.float32) / 127.5 - 1
+    results = {}
+    for name, prov in (("CPU", ["CPUExecutionProvider"]), ("DirectML", ["DmlExecutionProvider", "CPUExecutionProvider"])):
+        try:
+            sess = _session(embedder_path, cfg.threads, prov)
+            inp = sess.get_inputs()[0].name
+            out = sess.run(None, {inp: face})[0]
+            t = time.perf_counter()
+            for _ in range(5):
+                sess.run(None, {inp: face})
+            results[name] = (time.perf_counter() - t, out / np.linalg.norm(out, axis=1, keepdims=True), prov)
+        except Exception:
+            pass
+    if "DirectML" in results and "CPU" in results:
+        same = float(np.min(np.sum(results["DirectML"][1] * results["CPU"][1], axis=1)))
+        if same > 0.995 and (cfg.provider == "directml" or results["DirectML"][0] < results["CPU"][0] * 0.9):
+            return results["DirectML"][2], "DirectML (integrated graphics)"
+    return ["CPUExecutionProvider"], "CPU"
+
+
+def degrade(face112: np.ndarray, px: int, rng: np.random.Generator) -> np.ndarray:
+    """What this face would look like about `px` pixels wide through a webcam:
+    downsampled, sensor noise, JPEG, then back up to 112px."""
+    r = max(8, int(round(112 * px / 100)))
+    small = cv2.resize(face112, (r, r), interpolation=cv2.INTER_AREA).astype(np.float32)
+    small = np.clip(small + rng.normal(0, 3, small.shape), 0, 255).astype(np.uint8)
+    small = cv2.imdecode(cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])[1], cv2.IMREAD_COLOR)
+    return cv2.resize(small, (112, 112), interpolation=cv2.INTER_LINEAR)
 
 
 def read_image(path: str) -> np.ndarray | None:
@@ -54,8 +93,8 @@ class SCRFD:
     STRIDES = (8, 16, 32)
     ANCHORS = 2
 
-    def __init__(self, path: str, threads: int):
-        self.sess = _session(path, threads)
+    def __init__(self, path: str, threads: int, providers=None):
+        self.sess = _session(path, threads, providers)
         self.input = self.sess.get_inputs()[0].name
         self._centers: dict = {}
 
@@ -121,8 +160,8 @@ def align(img: np.ndarray, kps: np.ndarray) -> np.ndarray:
 # ───────────────────────── embedding ─────────────────────────
 
 class ArcFace:
-    def __init__(self, path: str, threads: int):
-        self.sess = _session(path, threads)
+    def __init__(self, path: str, threads: int, providers=None):
+        self.sess = _session(path, threads, providers)
         self.input = self.sess.get_inputs()[0].name
 
     def embed(self, faces: list[np.ndarray], tta: bool) -> tuple[np.ndarray, np.ndarray]:
@@ -201,8 +240,10 @@ class Face:
 
     @property
     def quality(self) -> float:
-        """0..1 weight used when fusing several frames."""
-        q = min(1.0, self.width / 140) * min(1.0, self.blur / 60) * max(0.0, 1 - abs(self.yaw) * 1.4)
+        """0..1 weight used when fusing several frames. Bigger, sharper, more
+        frontal faces count for more."""
+        sharp_ref = 60 * min(1.0, self.width / 112)
+        q = min(1.0, self.width / 140) * min(1.0, self.blur / max(sharp_ref, 5)) * max(0.0, 1 - abs(self.yaw) * 1.4)
         q *= min(1.0, self.det / 0.8) * min(1.0, self.norm / 20) if self.norm else 1.0
         return float(max(q, 0.05))
 
@@ -214,14 +255,48 @@ class Engine:
         missing = [MODEL_FILES[k] for k in ("detector", "embedder") if not os.path.exists(p(k))]
         if missing:
             raise FileNotFoundError(f"Missing models in {cfg.models_dir}: {', '.join(missing)}. Run: python setup_models.py")
-        self.detector = SCRFD(p("detector"), cfg.threads)
-        self.embedder = ArcFace(p("embedder"), cfg.threads)
+        providers, self.device = pick_providers(cfg, p("embedder"))
+        self.detector = SCRFD(p("detector"), cfg.threads, providers)
+        self.embedder = ArcFace(p("embedder"), cfg.threads, providers)
         self.spoof = None
         if cfg.antispoof and os.path.exists(p("spoof_v2")) and os.path.exists(p("spoof_v1se")):
             self.spoof = AntiSpoof(p("spoof_v2"), p("spoof_v1se"), cfg.threads)
 
     def faces(self, img: np.ndarray, det_size: int) -> list[Face]:
         boxes, kpss = self.detector.detect(img, det_size, self.cfg.det_thresh)
+        return self._faces(img, boxes, kpss)
+
+    def scene(self, img: np.ndarray, far_scan: bool, small_hints: list) -> list[Face]:
+        """Every face in a gate frame, near or far.
+        1. the whole frame at the normal size (faces down to ~30 px)
+        2. on far-scan frames, the whole frame at double size (down to ~18 px)
+        3. a zoomed look around each small face already being tracked, so far
+           students stay tracked every frame without paying for step 2"""
+        cfg = self.cfg
+        h, w = img.shape[:2]
+        parts = [self.detector.detect(img, cfg.det_size_gate, cfg.det_thresh)]
+        if far_scan:
+            parts.append(self.detector.detect(img, cfg.det_size_far, cfg.det_thresh))
+        for x1, y1, x2, y2 in small_hints:
+            side = max(x2 - x1, y2 - y1) * 4
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            ox, oy = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+            crop = img[oy:int(min(h, cy + side / 2)), ox:int(min(w, cx + side / 2))]
+            if crop.size == 0:
+                continue
+            b, k = self.detector.detect(crop, 320, cfg.det_thresh)
+            if len(b):
+                b[:, [0, 2]] += ox; b[:, [1, 3]] += oy
+                k[:, :, 0] += ox; k[:, :, 1] += oy
+            parts.append((b, k))
+        boxes = np.concatenate([b for b, _ in parts])
+        kpss = np.concatenate([k for _, k in parts])
+        if len(boxes) > 1:
+            keep = _nms(boxes[:, :4], boxes[:, 4], 0.4)
+            boxes, kpss = boxes[keep], kpss[keep]
+        return self._faces(img, boxes, kpss)
+
+    def _faces(self, img: np.ndarray, boxes: np.ndarray, kpss: np.ndarray) -> list[Face]:
         out = []
         for b, k in zip(boxes, kpss):
             al = align(img, k)
@@ -239,6 +314,16 @@ class Engine:
         if len(faces) > 1 and faces[1].width > faces[0].width * 0.8:
             return None, len(faces)
         return faces[0], len(faces)
+
+    def describe_many(self, img: np.ndarray, faces: list[Face], live_min_px: int) -> None:
+        """Embed several faces in one batch; liveness only where the face is big enough to judge."""
+        if not faces:
+            return
+        embs, norms = self.embedder.embed([f.aligned for f in faces], tta=False)
+        for f, e, n in zip(faces, embs, norms):
+            f.emb, f.norm = e, float(n)
+            if self.spoof is not None and f.width >= live_min_px:
+                f.live = self.spoof.live_score(img, f.box)
 
     def describe(self, img: np.ndarray, face: Face, tta: bool, liveness: bool) -> Face:
         embs, norms = self.embedder.embed([face.aligned], tta)

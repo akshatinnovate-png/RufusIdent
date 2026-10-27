@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   cameraId: '',
   lateAfter: '08:00',
   zone: 'square',
+  fov: 78,
   backendUrl: 'http://localhost:8000',
 };
 

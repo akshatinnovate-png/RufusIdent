@@ -1,4 +1,4 @@
-"""Measure how fast this laptop runs the recognition pipeline.
+"""Measure how fast this laptop runs the gate pipeline.
 
     python benchmark.py
 """
@@ -11,7 +11,7 @@ from config import load_config
 from engine import Engine
 
 
-def timed(fn, n=20):
+def timed(fn, n=10):
     fn()
     t = time.perf_counter()
     for _ in range(n):
@@ -23,22 +23,29 @@ def main():
     cfg = load_config()
     e = Engine(cfg)
     rng = np.random.default_rng(0)
-    crop = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
-    face = rng.integers(0, 255, (112, 112, 3), dtype=np.uint8)
-    box = np.array([176, 150, 336, 360, 0.9], np.float32)
+    frame = rng.integers(0, 255, (1080, 1080, 3), dtype=np.uint8)       # the centre-square gate lane of a 1080p camera
+    faces = [rng.integers(0, 255, (112, 112, 3), dtype=np.uint8) for _ in range(4)]
+    box = np.array([400, 300, 560, 510, 0.9], np.float32)
 
-    det = timed(lambda: e.detector.detect(crop, cfg.det_size_gate, cfg.det_thresh))
-    emb = timed(lambda: e.embedder.embed([face], False))
-    emb_tta = timed(lambda: e.embedder.embed([face], True), 10)
-    spoof = timed(lambda: e.spoof.live_score(crop, box)) if e.spoof else 0.0
-    frame = det + emb + spoof
-    print(f"CPU threads: {os.cpu_count()}")
-    print(f"  detect      {det:6.1f} ms")
-    print(f"  embed       {emb:6.1f} ms   (with mirror averaging, used for enrolment: {emb_tta:.1f} ms)")
-    print(f"  anti-spoof  {spoof:6.1f} ms")
-    print(f"  per frame   {frame:6.1f} ms  → about {1000 / frame:.1f} recognitions per second")
-    print(f"  decision after {cfg.min_frames} frames ≈ {frame * cfg.min_frames / 1000:.2f} s per student")
-    print(f"  enrolment ≈ {1000 / (timed(lambda: e.detector.detect(crop, cfg.det_size_enroll, cfg.det_thresh), 5) + emb_tta):.1f} photos per second")
+    det = timed(lambda: e.detector.detect(frame, cfg.det_size_gate, cfg.det_thresh))
+    far = timed(lambda: e.detector.detect(frame, cfg.det_size_far, cfg.det_thresh), 3)
+    emb1 = timed(lambda: e.embedder.embed(faces[:1], False))
+    emb4 = timed(lambda: e.embedder.embed(faces, False), 5)
+    spoof = timed(lambda: e.spoof.live_score(frame, box)) if e.spoof else 0.0
+    tta = timed(lambda: e.embedder.embed(faces[:1], True), 5)
+
+    one = det + emb1 + spoof
+    four = det + emb4 + 4 * spoof
+    avg_det = det + far / cfg.far_scan_every
+    print(f"Device: {e.device} · CPU threads: {os.cpu_count()}")
+    print(f"  detect (every frame)        {det:7.1f} ms")
+    print(f"  far scan (1 in {cfg.far_scan_every} frames)     {far:7.1f} ms")
+    print(f"  identify 1 face             {emb1 + spoof:7.1f} ms")
+    print(f"  identify 4 faces at once    {emb4 + 4 * spoof:7.1f} ms")
+    print(f"  → 1 student in view:  about {1000 / (avg_det + emb1 + spoof):4.1f} frames/s, decision in ~{cfg.min_frames * (avg_det + emb1 + spoof) / 1000:.1f} s")
+    print(f"  → 4 students in view: about {1000 / (avg_det + emb4 + 4 * spoof):4.1f} frames/s, all four decided in ~{cfg.min_frames * (avg_det + emb4 + 4 * spoof) / 1000:.1f} s")
+    print(f"  → once a student is marked, their face is no longer re-checked (only detection runs)")
+    print(f"  enrolment ≈ {1000 / (timed(lambda: e.detector.detect(frame, cfg.det_size_enroll, cfg.det_thresh), 3) + tta + emb1 * len(cfg.far_variants)):.1f} photos/s")
 
 
 if __name__ == "__main__":

@@ -14,11 +14,12 @@ import os
 import sys
 import time
 import urllib.request
+import zlib
 
 import numpy as np
 
 from config import load_config
-from engine import Engine, read_image
+from engine import Engine, degrade, read_image
 from gallery import Gallery
 
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -67,26 +68,27 @@ class Cache:
             z = np.load(self.path, allow_pickle=False)
             meta = json.loads(str(z["meta"]))
             for i, (k, m) in enumerate(meta.items()):
-                m["emb"] = z["emb"][m.pop("row")].astype(np.float32) if m.get("row") is not None else None
+                row, nv = m.pop("row"), m.pop("nv", 1)
+                m["emb"] = z["emb"][row:row + nv].astype(np.float32) if row is not None else None
                 self.items[k] = m
 
     @staticmethod
     def key(path: str) -> str:
         st = os.stat(path)
-        return f"{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}"
+        return f"v2|{os.path.abspath(path)}|{st.st_size}|{st.st_mtime_ns}"
 
     def save(self):
         embs, meta = [], {}
         for k, m in self.items.items():
             mm = {kk: v for kk, v in m.items() if kk != "emb"}
             if m.get("emb") is not None:
-                mm["row"] = len(embs)
+                mm["row"], mm["nv"] = sum(len(e) for e in embs), len(m["emb"])
                 embs.append(m["emb"])
             else:
                 mm["row"] = None
             meta[k] = mm
         tmp = self.path + ".tmp.npz"
-        np.savez_compressed(tmp, emb=np.asarray(embs, np.float16).reshape(-1, 512), meta=json.dumps(meta))
+        np.savez_compressed(tmp, emb=(np.concatenate(embs) if embs else np.zeros((0, 512))).astype(np.float16), meta=json.dumps(meta))
         os.replace(tmp, self.path)
 
 
@@ -110,7 +112,12 @@ def process(engine: Engine, cfg, path: str) -> dict:
     if abs(face.yaw) > cfg.max_yaw:
         return {"status": "turned_away", **info}
     engine.describe(img, face, tta=True, liveness=False)
-    return {"status": "ok", "quality": round(face.quality, 3), "norm": round(face.norm, 2), **info, "emb": face.emb}
+    # The same face as the gate camera would see it from far away.
+    rng = np.random.default_rng(zlib.crc32(os.path.basename(path).encode()))
+    far = [degrade(face.aligned, px, rng) for px in cfg.far_variants]
+    far_embs = engine.embedder.embed(far, tta=False)[0] if far else np.zeros((0, 512), np.float32)
+    emb = np.vstack([face.emb[None], far_embs]).astype(np.float32)
+    return {"status": "ok", "quality": round(face.quality, 3), "norm": round(face.norm, 2), **info, "emb": emb}
 
 
 def main():
@@ -150,7 +157,7 @@ def main():
     for sid, items in results.items():
         ok = [(p, m) for p, m in items if m["status"] == "ok"]
         if len(ok) >= 3:
-            E = np.stack([m["emb"] for _, m in ok])
+            E = np.stack([m["emb"][0] for _, m in ok])
             S = E @ E.T
             mean_other = (S.sum(1) - 1) / (len(ok) - 1)
             for (p, m), v in zip(ok, mean_other):
@@ -179,9 +186,11 @@ def main():
         for p, m in items:
             if m["status"] != "ok":
                 continue
-            others = gallery.match(m["emb"], k=cfg.top_k, n=3)
-            other = next(((o, s) for o, s in others if o != sid), None)
-            seg = gallery.emb[gallery.start[own]:gallery.start[own] + gallery.count[own]] @ m["emb"]
+            q = m["emb"][0]
+            others = gallery.match(q, k=cfg.top_k, n=3)
+            other = next(((o, s) for o, s, _ in others if o != sid), None)
+            seg = np.asarray([float(gallery.emb[gallery.photo_start[ph]] @ q)
+                              for ph in range(gallery.sp_start[own], gallery.sp_start[own] + gallery.sp_count[own])])
             seg = np.sort(seg)[::-1][1:1 + cfg.top_k]          # leave this photo out
             mine = float(seg.mean()) if seg.size else 1.0
             if other and other[1] > mine and other[1] >= 0.35:
@@ -227,10 +236,13 @@ def main():
     if roster is not None and summary["roster_without_photos"]:
         print(f"  {len(summary['roster_without_photos']):6d} roster students have no photos")
     print(f"  Look-alike students: {report['lookalike_students']}")
-    print(f"  Thresholds ({report['source']}): accept ≥ {report['t_accept']:.3f}, review ≥ {report['t_review']:.3f}")
-    if "genuine_accept_rate" in report:
-        print(f"  Enrolment self-test: {report['genuine_accept_rate'] * 100:.2f}% of genuine photos pass, "
-              f"{report.get('impostor_pass_rate', 0) * 100:.3f}% of impostors pass")
+    print(f"  Thresholds: {report['source']}")
+    for level, label in (("near", "near faces (64 px+)"), ("far", "far faces")):
+        r = report[level]
+        line = f"    {label:20s} accept ≥ {r['t_accept']:.3f}, review ≥ {r['t_review']:.3f}"
+        if r["genuine_accept_rate"] is not None:
+            line += f" · self-test: {r['genuine_accept_rate'] * 100:.2f}% genuine pass, {(r['impostor_pass_rate'] or 0) * 100:.3f}% impostors pass"
+        print(line)
     if "warning" in report:
         print(f"  WARNING: {report['warning']}")
     print(f"Report: {os.path.join(cfg.data_dir, 'enroll_report.csv')}")

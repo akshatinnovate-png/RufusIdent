@@ -215,7 +215,7 @@
     <div class="panel">
       <h4>SUBJECT</h4>
       <dl class="kv">
-        <dt>SIZE</dt><dd id="mSize">—</dd>
+        <dt>FACE</dt><dd id="mSize">—</dd>
         <dt>POSE</dt><dd id="mPose">—</dd>
         <dt>QUALITY</dt><dd id="mQuality">—</dd>
         <dt>LIVENESS</dt><dd id="mLive">—</dd>
@@ -289,6 +289,9 @@
           <option value="tight">Tight centre (students far from camera)</option>
           <option value="full">Full frame</option>
         </select>
+      </label>
+      <label>Camera field of view (degrees, for the distance read-out)
+        <input type="number" name="fov" min="10" max="120" step="1">
       </label>
       <label>Mark “Late” after <input type="time" name="lateAfter"></label>
       <label>Recognition backend URL <input name="backendUrl" placeholder="http://localhost:8000"></label>

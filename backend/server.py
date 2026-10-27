@@ -3,11 +3,12 @@
     python server.py
 
 GET  /health                 status, enrolled students, thresholds
-POST /recognize              multipart image (+ track, gate) -> decision for this person
+POST /frame                  multipart image (a gate camera frame) -> every face in it, tracked and identified
 POST /reload                 reload the gallery after running enroll.py
 GET  /photo/{admission_no}   the student's best enrolment photo
 GET  /student/{admission_no} enrolment details for one student
 """
+import contextlib
 import datetime as dt
 import os
 import threading
@@ -23,29 +24,43 @@ from config import load_config
 from engine import Engine, decode_image
 from fusion import Fusion
 from gallery import Gallery
+from tracker import Tracker
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 cfg = load_config()
 engine = Engine(cfg)
-fusion = Fusion(cfg)
+fusion = Fusion(cfg, liveness=engine.spoof is not None)
+tracker = Tracker(ttl_s=3.0)
 gallery = Gallery.load(cfg.data_dir)
-gallery_lock = threading.Lock()
+frame_lock = threading.Lock()          # one frame at a time keeps tracking consistent
+state = {"frames": 0, "learned": 0, "last_adapt_save": time.monotonic()}
 
-app = FastAPI(title="RufusIdent recognition", version=VERSION)
+@contextlib.asynccontextmanager
+async def lifespan(_app):
+    yield
+    if gallery is not None and len(gallery.adapt):
+        gallery.save_adaptive(cfg.data_dir)      # keep what was learned at the gate
+
+
+app = FastAPI(title="RufusIdent recognition", version=VERSION, lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-def _save_evidence(img, result: dict):
+def _save_evidence(img, box, result: dict):
     if not cfg.save_evidence:
         return
     now = dt.datetime.now()
-    folder = {"match": "", "review": "_review", "spoof": "_spoof", "unknown": "_unknown"}[result["status"]]
-    name = f"{result.get('student_id') or 'unknown'}_{now:%H%M%S}.jpg"
-    path = os.path.join(cfg.evidence_dir, f"{now:%Y-%m-%d}", folder, name) if folder else os.path.join(cfg.evidence_dir, f"{now:%Y-%m-%d}", name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    x1, y1, x2, y2 = box[:4]
+    side = max(x2 - x1, y2 - y1) * 3
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    h, w = img.shape[:2]
+    crop = img[int(max(0, cy - side / 2)):int(min(h, cy + side / 2)), int(max(0, cx - side / 2)):int(min(w, cx + side / 2))]
+    sub = {"match": "", "review": "_review", "spoof": "_spoof", "unknown": "_unknown"}[result["status"]]
+    folder = os.path.join(cfg.evidence_dir, f"{now:%Y-%m-%d}", sub)
+    os.makedirs(folder, exist_ok=True)
+    ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
     if ok:
-        buf.tofile(path)
+        buf.tofile(os.path.join(folder, f"{result.get('student_id') or 'unknown'}_{now:%H%M%S_%f}"[:-3] + ".jpg"))
 
 
 @app.get("/health")
@@ -55,10 +70,11 @@ def health():
         "ok": True,
         "version": VERSION,
         "students": len(g.ids) if g else 0,
-        "photos": int(len(g.emb)) if g else 0,
+        "photos": int(len(g.photo_start)) if g else 0,
+        "learned_samples": int(len(g.adapt)) if g else 0,
         "antispoof": engine.spoof is not None,
-        "thresholds": None if not g else {"accept": cfg.t_accept or g.t_accept, "review": cfg.t_review or g.t_review, "source": g.calib["source"]},
-        "min_frames": cfg.min_frames,
+        "device": engine.device,
+        "calibration": None if not g else g.calib,
     }
 
 
@@ -67,35 +83,56 @@ def reload():
     global gallery
     g = Gallery.load(cfg.data_dir)
     if g is None:
-        raise HTTPException(404, "No gallery yet. Run enroll.py first.")
-    with gallery_lock:
+        raise HTTPException(404, "No gallery yet (or made by an older version). Run enroll.py.")
+    with frame_lock:
         gallery = g
     return {"ok": True, "students": len(g.ids)}
 
 
-@app.post("/recognize")
-def recognize(image: UploadFile = File(...), track: str = Form("default"), gate: str = Form("")):
+@app.post("/frame")
+def frame(image: UploadFile = File(...), gate: str = Form("")):
     t0 = time.perf_counter()
-    if gallery is None:
-        return {"status": "unknown", "reason": "no students enrolled yet", "ms": 0}
     img = decode_image(image.file.read())
     if img is None:
         raise HTTPException(400, "Not an image")
+    with frame_lock:
+        state["frames"] += 1
+        far_scan = state["frames"] % cfg.far_scan_every == 1
+        faces = engine.scene(img, far_scan, tracker.small_boxes(cfg.near_px))
+        tids = tracker.assign([f.box for f in faces])
 
-    face, n = engine.main_face(img, cfg.det_size_gate)
-    if face is None:
-        return {"status": "no_face" if not n else "multiple_faces", "faces": n, "ms": round((time.perf_counter() - t0) * 1000)}
-    quality = {"face_px": round(face.width), "sharpness": round(face.blur), "yaw": round(face.yaw, 2), "brightness": round(face.brightness)}
-    if face.width < cfg.min_face_px or face.blur < cfg.min_blur:
-        return {"status": "low_quality", "quality": quality, "ms": round((time.perf_counter() - t0) * 1000)}
+        out, todo = [], []
+        for f, tid in zip(faces, tids):
+            item = {"track": tid, "box": [round(float(v), 1) for v in f.box[:4]], "width": round(f.width), "det": round(f.det, 3)}
+            done = fusion.cached(tid)
+            if gallery is None:
+                item.update(status="unknown", reason="no students enrolled yet")
+            elif done:
+                item.update({k: v for k, v in done.items() if k != "candidates"}, cached=True)
+            elif f.width < cfg.recog_min_px:
+                item.update(status="too_far")
+            elif f.blur < cfg.min_blur * min(1.0, f.width / 112) or abs(f.yaw) > 0.6:
+                item.update(status="low_quality", reason="blurred" if abs(f.yaw) <= 0.6 else "turned away")
+            else:
+                todo.append((f, item))
+            out.append(item)
 
-    engine.describe(img, face, tta=False, liveness=True)
-    result = fusion.update(track, face.emb, face.quality, face.live, gallery)
-    if result.get("decided"):
-        _save_evidence(img, result)
-    result["quality"] = quality
-    result["ms"] = round((time.perf_counter() - t0) * 1000)
-    return result
+        engine.describe_many(img, [f for f, _ in todo], cfg.live_min_px)
+        for f, item in todo:
+            r = fusion.update(item["track"], f.emb, f.quality, f.width, f.live, gallery)
+            learn = r.pop("_learn", None)
+            if learn is not None and r["student_id"] in gallery.index:
+                gallery.add_adaptive(r["student_id"], learn, cfg.adaptive_per_student)
+                state["learned"] += 1
+            if r.get("decided"):
+                _save_evidence(img, f.box, r)
+            item.update(r)
+
+        if state["learned"] and time.monotonic() - state["last_adapt_save"] > 60:
+            gallery.save_adaptive(cfg.data_dir)
+            state["learned"], state["last_adapt_save"] = 0, time.monotonic()
+
+    return {"faces": out, "far_scan": far_scan, "ms": round((time.perf_counter() - t0) * 1000)}
 
 
 @app.get("/photo/{student_id}")
@@ -114,11 +151,12 @@ def student(student_id: str):
     if not gallery or student_id not in gallery.index:
         raise HTTPException(404, "Not enrolled")
     i = gallery.index[student_id]
-    return {"student_id": student_id, "photos": int(gallery.count[i]), "lookalikes": gallery.lookalikes.get(student_id, [])}
+    return {"student_id": student_id, "photos": int(gallery.sp_count[i]), "lookalikes": gallery.lookalikes.get(student_id, []),
+            "learned_samples": int((gallery.adapt_owner == i).sum())}
 
 
 if __name__ == "__main__":
-    print(f"RufusIdent backend on http://{cfg.host}:{cfg.port}  ·  "
+    print(f"RufusIdent backend {VERSION} on http://{cfg.host}:{cfg.port}  ·  {engine.device}  ·  "
           f"{len(gallery.ids) if gallery else 0} students enrolled  ·  anti-spoof {'on' if engine.spoof else 'off'}")
     if gallery is None:
         print("No gallery yet: put photos in photos/<admission_no>/ and run  python enroll.py")

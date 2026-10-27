@@ -1,16 +1,16 @@
-// Gate camera: live face tracking (MediaPipe, runs offline on this laptop),
-// quality checks, and hand-off of good face crops to the recognition backend.
+// Gate camera. Two things run side by side:
+//  * MediaPipe in the browser (25 fps): face mesh, pose and light hints for
+//    students close to the camera.
+//  * The recognition backend: whole frames are streamed to it; it finds every
+//    face (near or 5-6 m away), tracks each person and says who they are.
 
 import { state, mark, undo, recordFor, arrivalStatus, daySummary, getDay, search, classKey, studentStats, onChange, STATUS } from './data.js';
 import { $, esc, avatar, toast, pct } from './ui.js';
 
-const MIN_FACE_PX = 90;       // face width in camera pixels before we try to identify (ArcFace uses 112px)
-const MAX_YAW = 0.18;         // how far the head may turn (0 = straight on)
+const MAX_YAW = 0.18;          // how far the head may turn (0 = straight on)
 const LOW_LIGHT = 55, GLARE = 215;
-const REQUEST_GAP_MS = 40;     // up to ~25 frames a second to the backend
-const MAX_INFLIGHT = 2;        // keep the backend busy while the next frame is cropped
-const RETRY_MS = 3000;         // after 'unknown'/'review'/'spoof', try again with a fresh track
-const CROP_PX = 512;
+const FACE_M = 0.15;           // average face width in metres, for the distance estimate
+const STALE_MS = 1200;         // hide backend boxes older than this (or 2.5x the backend's frame time)
 
 let vision, engine, enginePromise, delegate = '', TESS = [];
 
@@ -70,7 +70,10 @@ let running = false;
 let lastVT = -1, lastT = 0, fps = 0, frame = 0;
 let light = 0;
 const lightHist = [];
-let inflight = 0, lastReq = 0;
+let inflight = false;
+let lastNear = [];
+let backend = { faces: [], at: 0, scale: 1, z: null, ms: 0 };
+const handled = new Map();     // track -> status already acted on
 const review = [];
 let video, canvas, ctx;
 
@@ -107,9 +110,11 @@ export async function openCamera() {
   $('#mLive').textContent = '—'; $('#mVerify').textContent = '—';
   setStatus(state.settings.backendUrl ? 'LIVE · SCANNING' : 'LIVE · MANUAL MODE', 'ok');
   running = true;
+  backend = { faces: [], at: 0, scale: 1, z: null, ms: 0 };
   resize();
   addEventListener('resize', resize);
   loop();
+  if (state.settings.backendUrl) pump();
 }
 
 export function closeCamera() {
@@ -149,7 +154,7 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-// ───────────── frame loop ─────────────
+// ───────────── frame loop (browser, every camera frame) ─────────────
 
 function loop() {
   if (!running) return;
@@ -160,22 +165,27 @@ function loop() {
   if (lastT) fps = fps ? fps * 0.9 + (1000 / (now - lastT)) * 0.1 : 1000 / (now - lastT);
   lastT = now;
 
+  // With the backend connected the browser model only draws the mesh and gives
+  // pose hints, so it runs on every other frame to leave the CPU to recognition.
   const z = zone();
-  let res;
-  try { res = engine.detectForVideo(zoneImage(z), now); } catch { return; }
-  const faces = (res.faceLandmarks || []).map(lm => describe(lm, z));
-  faces.sort((a, b) => b.w - a.w);
-  if (++frame % 6 === 0) sampleLight(faces[0]);
+  let near = lastNear;
+  if (!state.settings.backendUrl || frame % 2 === 0) {
+    let res;
+    try { res = engine.detectForVideo(zoneImage(z), now); } catch { return; }
+    near = lastNear = (res.faceLandmarks || []).map(lm => describe(lm, z)).sort((a, b) => b.w - a.w);
+  }
+  if (++frame % 6 === 0) sampleLight(near[0] || biggestBackendFace());
   if (frame % 10 === 0) $('#mFps').textContent = fps.toFixed(1);
 
-  $('#mFaces').textContent = faces.length;
-  evaluate(faces);
-  draw(faces);
+  const far = liveBackendFaces();
+  $('#mFaces').textContent = state.settings.backendUrl ? far.length : near.length;
+  evaluate(near, far);
+  draw(near, far);
 }
 
-// The detector only looks at the gate lane: a centre square of the frame.
-// The browser's face model is short-range, so cropping makes a student 2 m
-// away look ~1.8x bigger to it.
+// The browser's face model only looks at the gate lane (a centre square):
+// it is short-range, and cropping makes a student 2 m away look ~1.8x bigger.
+// The same lane is what gets streamed to the backend.
 const ZONES = { square: 1, tight: 0.6 };
 
 function zone() {
@@ -205,6 +215,12 @@ function describe(lm, z) {
   const eyeDist = Math.hypot(r.x - l.x, r.y - l.y) || 1e-6;
   const yaw = (nose.x - (l.x + r.x) / 2) / eyeDist;
   return { lm: pts, x: x0, y: y0, w: x1 - x0, h: y1 - y0, yaw };
+}
+
+// Rough distance from face width, using the camera's field of view (Settings → Gate).
+function distance(px) {
+  const fov = (Number(state.settings.fov) || 78) * Math.PI / 180;
+  return (FACE_M * video.videoWidth) / (2 * Math.tan(fov / 2) * px);
 }
 
 // Light is measured on the face when there is one (a dark corridor behind a
@@ -240,6 +256,58 @@ function drawLightGraph() {
   g.fillStyle = 'rgba(79,216,255,.12)'; g.fill();
 }
 
+// ───────────── backend stream (as fast as the backend answers) ─────────────
+
+// Backend faces in camera pixels, while they are fresh.
+function liveBackendFaces() {
+  if (!backend.z || performance.now() - backend.at > Math.max(STALE_MS, backend.ms * 2.5)) return [];
+  const { z, scale } = backend;
+  return backend.faces.map(f => {
+    const [x1, y1, x2, y2] = f.box.map(v => v * scale);
+    return { ...f, x: z.x + x1, y: z.y + y1, w: x2 - x1, h: y2 - y1, px: f.width * scale };
+  });
+}
+
+function biggestBackendFace() {
+  return liveBackendFaces().sort((a, b) => b.w - a.w)[0];
+}
+
+async function pump() {
+  if (!running || inflight) return;
+  inflight = true;
+  try {
+    if (video.readyState < 2) { await new Promise(r => setTimeout(r, 200)); return; }
+    const z = zone();
+    // Native resolution (capped at 4K-lane size): far faces need every pixel.
+    const px = Math.round(Math.min(z.w, 2160));
+    const c = document.createElement('canvas');
+    c.width = px; c.height = Math.round(z.h * px / z.w);
+    c.getContext('2d').drawImage(video, z.x, z.y, z.w, z.h, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.88));
+    const fd = new FormData();
+    fd.append('image', blob, 'frame.jpg');
+    fd.append('gate', state.settings.gateName);
+    const res = await fetch(state.settings.backendUrl.replace(/\/$/, '') + '/frame', { method: 'POST', body: fd, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    backend = { faces: j.faces || [], at: performance.now(), scale: z.w / c.width, z, ms: j.ms };
+    $('#mMatcher').textContent = `BACKEND · ${j.ms} ms${j.far_scan ? ' · FAR' : ''}`;
+    for (const f of backend.faces) {
+      if (!['match', 'review', 'unknown', 'spoof'].includes(f.status)) continue;
+      if (handled.get(f.track) === f.status) continue;     // already acted on this verdict
+      handled.set(f.track, f.status);
+      await handleResult(f, c);
+    }
+    if (handled.size > 500) handled.clear();
+  } catch (e) {
+    $('#mMatcher').textContent = `BACKEND · ${e.name === 'TimeoutError' ? 'TIMEOUT' : 'OFFLINE'}`;
+    await new Promise(r => setTimeout(r, 1000));
+  } finally {
+    inflight = false;
+    if (running) setTimeout(pump, 0);
+  }
+}
+
 // ───────────── drawing ─────────────
 
 let banner = null; // { text, kind, until }
@@ -266,187 +334,161 @@ function drawZone(pt) {
   ctx.stroke();
 }
 
-function draw(faces) {
+const COLORS = { match: '#3dffa2', pending: '#4fd8ff', too_far: 'rgba(255,255,255,.55)', low_quality: '#ffb648', review: '#ffb648', unknown: '#ff5a36', spoof: '#ff5a36', multiple_faces: '#ffb648' };
+
+function faceLabel(f) {
+  const s = f.student_id && state.byId.get(String(f.student_id));
+  const d = `${distance(f.px).toFixed(1)}m`;
+  switch (f.status) {
+    case 'match': return `${s ? s.name.toUpperCase() : f.student_id} ✓`;
+    case 'pending': return f.reason?.includes('closer') ? `${s ? s.name.split(' ')[0].toUpperCase() : 'KNOWN'} · COME CLOSER · ${d}` : `VERIFYING ${Math.min(f.frames || 0, f.need_frames || 3)}/${f.need_frames || 3} · ${d}`;
+    case 'too_far': return `DETECTED · ${d}`;
+    case 'low_quality': return `${(f.reason || 'unclear').toUpperCase()} · ${d}`;
+    case 'review': return 'TEACHER CHECK';
+    case 'spoof': return 'PHOTO / SCREEN?';
+    case 'unknown': return 'NOT RECOGNISED';
+    default: return f.status.toUpperCase();
+  }
+}
+
+function brackets(bx, by, bw, bh, color, width) {
+  const c = Math.min(bw, bh) * 0.2;
+  ctx.strokeStyle = color; ctx.lineWidth = width;
+  ctx.beginPath();
+  ctx.moveTo(bx, by + c); ctx.lineTo(bx, by); ctx.lineTo(bx + c, by);
+  ctx.moveTo(bx + bw - c, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + c);
+  ctx.moveTo(bx + bw, by + bh - c); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw - c, by + bh);
+  ctx.moveTo(bx + c, by + bh); ctx.lineTo(bx, by + bh); ctx.lineTo(bx, by + bh - c);
+  ctx.stroke();
+}
+
+function tag(x, y, text, color) {
+  ctx.font = '600 12px "JetBrains Mono", monospace';
+  const tw = ctx.measureText(text).width + 14;
+  ctx.fillStyle = 'rgba(2,14,9,.8)';
+  ctx.fillRect(x, y - 24, tw, 20);
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y - 24, 3, 20);
+  ctx.fillText(text, x + 8, y - 10);
+}
+
+function draw(near, far) {
   const cw = canvas.clientWidth, ch = canvas.clientHeight;
   ctx.clearRect(0, 0, cw, ch);
   const { s, pt } = mapper();
   drawZone(pt);
-  if (!faces.length) return;
 
-  faces.forEach((f, i) => {
-    const primary = i === 0;
-    const [ax, ay] = pt(f.x + f.w, f.y);
-    const w = f.w * s, h = f.h * s;
-    const pad = w * 0.12;
-    const bx = ax - pad, by = ay - pad * 1.6, bw = w + pad * 2, bh = h + pad * 2.4;
-    const color = primary ? (f.quality === 'ok' ? '#3dffa2' : '#ffb648') : 'rgba(255,255,255,.45)';
-
-    if (primary && TESS.length) {
-      ctx.strokeStyle = 'rgba(61,255,162,.16)';
-      ctx.lineWidth = 0.6;
-      ctx.beginPath();
-      for (const { start, end } of TESS) {
-        const a = f.lm[start], b = f.lm[end];
-        const [x1, y1] = pt(a.x, a.y), [x2, y2] = pt(b.x, b.y);
-        ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-      }
-      ctx.stroke();
-      ctx.fillStyle = '#ff5ad1';
-      for (const k of [33, 263, 1, 61, 291, 152, 10]) {
-        const [x, y] = pt(f.lm[k].x, f.lm[k].y);
-        ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-
-    // Corner brackets.
-    const c = Math.min(bw, bh) * 0.2;
-    ctx.strokeStyle = color; ctx.lineWidth = primary ? 3 : 1.5;
+  // Face mesh on the closest student (cosmetic, from the browser model).
+  const f0 = near[0];
+  if (f0 && TESS.length) {
+    ctx.strokeStyle = 'rgba(61,255,162,.16)';
+    ctx.lineWidth = 0.6;
     ctx.beginPath();
-    ctx.moveTo(bx, by + c); ctx.lineTo(bx, by); ctx.lineTo(bx + c, by);
-    ctx.moveTo(bx + bw - c, by); ctx.lineTo(bx + bw, by); ctx.lineTo(bx + bw, by + c);
-    ctx.moveTo(bx + bw, by + bh - c); ctx.lineTo(bx + bw, by + bh); ctx.lineTo(bx + bw - c, by + bh);
-    ctx.moveTo(bx + c, by + bh); ctx.lineTo(bx, by + bh); ctx.lineTo(bx, by + bh - c);
-    ctx.stroke();
-
-    if (primary) {
-      const label = banner && performance.now() < banner.until ? banner.text : f.label;
-      ctx.font = '600 13px "JetBrains Mono", monospace';
-      const tw = ctx.measureText(label).width + 16;
-      ctx.fillStyle = 'rgba(2,14,9,.78)';
-      ctx.fillRect(bx, by - 30, tw, 22);
-      ctx.fillStyle = color;
-      ctx.fillRect(bx, by - 30, 3, 22);
-      ctx.fillText(label, bx + 9, by - 14);
+    for (const { start, end } of TESS) {
+      const [x1, y1] = pt(f0.lm[start].x, f0.lm[start].y), [x2, y2] = pt(f0.lm[end].x, f0.lm[end].y);
+      ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
     }
-  });
-}
-
-// ───────────── quality + recognition ─────────────
-
-// One track = one person walking up to the camera. Every good frame of the
-// track is streamed to the backend, which fuses them and answers 'match'
-// only when several frames agree (see backend/fusion.py).
-let track = null;
-
-function trackFor(f) {
-  const now = performance.now();
-  const cx = f.x + f.w / 2;
-  const fresh = !track
-    || now - track.seen > 1500                         // face left the frame
-    || Math.abs(cx - track.cx) > f.w * 0.6             // a different person stepped in
-    || f.w < track.w * 0.5
-    || (track.decided && track.decided !== 'match' && now - track.decidedAt > RETRY_MS);
-  if (fresh) track = { id: Math.random().toString(36).slice(2, 10), cx, w: f.w, seen: now, frames: 0, need: 3, decided: null, decidedAt: 0 };
-  track.cx = cx; track.w = f.w; track.seen = now;
-  return track;
-}
-
-function evaluate(faces) {
-  if (!faces.length) {
-    $('#mSize').textContent = '—'; $('#mPose').textContent = '—'; $('#mQuality').textContent = 'NO FACE';
-    if (!(banner && performance.now() < banner.until)) prompt('STAND IN FRONT OF THE CAMERA');
-    return;
+    ctx.stroke();
+    ctx.fillStyle = '#ff5ad1';
+    for (const k of [33, 263, 1, 61, 291, 152, 10]) {
+      const [x, y] = pt(f0.lm[k].x, f0.lm[k].y);
+      ctx.beginPath(); ctx.arc(x, y, 2.4, 0, Math.PI * 2); ctx.fill();
+    }
   }
-  const f = faces[0];
-  const t = trackFor(f);
-  const turned = Math.abs(f.yaw) > MAX_YAW;
-  let q = 'ok', msg;
-  if (f.w < MIN_FACE_PX) { q = 'far'; msg = 'STEP CLOSER'; }
-  else if (turned) { q = 'pose'; msg = 'LOOK STRAIGHT AT THE CAMERA'; }
-  else if (light < LOW_LIGHT) { q = 'dark'; msg = 'TOO DARK · CHECK GATE LIGHTING'; }
-  else if (light > GLARE) { q = 'glare'; msg = 'TOO BRIGHT · CAMERA FACING LIGHT'; }
-  f.quality = q;
-  const backend = !!state.settings.backendUrl;
-  f.label = q !== 'ok' ? msg
-    : !backend ? 'FACE OK'
-    : t.decided === 'match' && t.name ? t.name.toUpperCase()
-    : t.decided ? t.decided.toUpperCase()
-    : `VERIFYING ${Math.min(t.frames, t.need)}/${t.need}`;
 
-  $('#mSize').textContent = `${Math.round(f.w)} px`;
-  $('#mPose').textContent = turned ? `TURNED ${f.yaw > 0 ? 'L' : 'R'}` : 'FRONTAL';
-  $('#mQuality').textContent = q === 'ok' ? 'GOOD' : q.toUpperCase();
-  $('#mVerify').textContent = backend ? (t.decided ? t.decided.toUpperCase() : `${t.frames}/${t.need} FRAMES`) : '—';
+  if (state.settings.backendUrl) {
+    // Every face the backend is tracking, near or far, each with its own verdict.
+    for (const f of far) {
+      const [ax, ay] = pt(f.x + f.w, f.y);
+      const w = f.w * s, h = f.h * s, pad = Math.max(w * 0.15, 4);
+      const color = COLORS[f.status] || '#fff';
+      brackets(ax - pad, ay - pad, w + pad * 2, h + pad * 2, color, f.w > 80 ? 3 : 2);
+      tag(ax - pad, ay - pad, faceLabel(f), color);
+    }
+  } else {
+    near.forEach((f, i) => {
+      const [ax, ay] = pt(f.x + f.w, f.y);
+      const w = f.w * s, h = f.h * s, pad = w * 0.12;
+      brackets(ax - pad, ay - pad * 1.6, w + pad * 2, h + pad * 2.4, i ? 'rgba(255,255,255,.45)' : '#ffb648', i ? 1.5 : 3);
+      if (!i) tag(ax - pad, ay - pad * 1.6, 'FACE OK · MANUAL MODE', '#ffb648');
+    });
+  }
+}
+
+// ───────────── prompts + readouts ─────────────
+
+function evaluate(near, far) {
+  const f = near[0];
+  const turned = f && Math.abs(f.yaw) > MAX_YAW;
+  $('#mPose').textContent = f ? (turned ? `TURNED ${f.yaw > 0 ? 'L' : 'R'}` : 'FRONTAL') : '—';
+
+  const main = [...far].sort((a, b) => b.w - a.w)[0];
+  if (main) {
+    $('#mSize').textContent = `${Math.round(main.px)} px · ${distance(main.px).toFixed(1)} m`;
+    $('#mQuality').textContent = main.status === 'too_far' ? 'TOO FAR' : main.range === 'far' ? 'FAR' : main.status === 'low_quality' ? 'LOW' : 'GOOD';
+    $('#mLive').textContent = main.live != null ? `${Math.round(main.live * 100)}%` : main.px < 48 ? 'NEEDS CLOSER' : '—';
+    $('#mVerify').textContent = main.status === 'pending' ? `${main.frames || 0}/${main.need_frames || 3} FRAMES` : main.status.toUpperCase().replace('_', ' ');
+  } else {
+    $('#mSize').textContent = f ? `${Math.round(f.w)} px` : '—';
+    $('#mQuality').textContent = f ? 'GOOD' : 'NO FACE';
+    $('#mLive').textContent = '—'; $('#mVerify').textContent = '—';
+  }
 
   if (banner && performance.now() < banner.until) { prompt(banner.text, banner.kind); return; }
-  if (q !== 'ok') { prompt(msg, 'warn'); return; }
-  if (faces.length > 1 && faces[1].w > MIN_FACE_PX) prompt('ONE STUDENT AT A TIME, PLEASE', 'warn');
-  else if (!backend) prompt('FACE OK · RECOGNITION OFFLINE · USE MANUAL MARK', 'warn');
-  else if (!t.decided) prompt(t.frames ? `VERIFYING ${Math.min(t.frames, t.need)}/${t.need} · HOLD STILL` : 'HOLD STILL…', 'ok');
-  else if (t.decided === 'match') prompt('MARKED ✓ · PLEASE MOVE ON', 'ok');
-
-  if (backend && !t.decided && inflight < MAX_INFLIGHT && performance.now() - lastReq > REQUEST_GAP_MS) recognise(f, t);
-}
-
-// A square crop with plenty of context around the face: the anti-spoof
-// models look at the area around the face (up to 4x its size).
-function cropFace(f) {
-  const vw = video.videoWidth, vh = video.videoHeight;
-  const side = Math.min(Math.max(f.w, f.h) * 3.2, vw, vh);
-  const cx = f.x + f.w / 2, cy = f.y + f.h / 2;
-  const x0 = Math.min(Math.max(cx - side / 2, 0), vw - side);
-  const y0 = Math.min(Math.max(cy - side / 2, 0), vh - side);
-  const c = document.createElement('canvas');
-  c.width = c.height = CROP_PX;
-  c.getContext('2d').drawImage(video, x0, y0, side, side, 0, 0, CROP_PX, CROP_PX);
-  return c;
-}
-
-async function recognise(f, t) {
-  inflight++;
-  lastReq = performance.now();
-  try {
-    const crop = cropFace(f);
-    const blob = await new Promise(r => crop.toBlob(r, 'image/jpeg', 0.9));
-    const fd = new FormData();
-    fd.append('image', blob, 'face.jpg');
-    fd.append('track', t.id);
-    fd.append('gate', state.settings.gateName);
-    const res = await fetch(state.settings.backendUrl.replace(/\/$/, '') + '/recognize', { method: 'POST', body: fd, signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = await res.json();
-    $('#mMatcher').textContent = `BACKEND · ${j.ms ?? '?'} ms`;
-    if (j.live != null) $('#mLive').textContent = `${Math.round(j.live * 100)}%`;
-    if (t !== track || t.decided) return;              // an answer for someone who already left
-    if (j.frames) { t.frames = j.frames; t.need = j.need_frames || t.need; }
-    if (['match', 'review', 'unknown', 'spoof'].includes(j.status)) {
-      t.decided = j.status;
-      t.decidedAt = performance.now();
-      await handleResult(j, t, crop);
-    }
-  } catch (e) {
-    $('#mMatcher').textContent = `BACKEND · ${e.name === 'TimeoutError' ? 'TIMEOUT' : 'ERROR'}`;
-  } finally {
-    inflight--;
+  if (f && f.w > 90) {
+    if (turned) return prompt('LOOK STRAIGHT AT THE CAMERA', 'warn');
+    if (light < LOW_LIGHT) return prompt('TOO DARK · CHECK GATE LIGHTING', 'warn');
+    if (light > GLARE) return prompt('TOO BRIGHT · CAMERA FACING LIGHT', 'warn');
   }
+  if (!state.settings.backendUrl) return prompt(f ? 'RECOGNITION OFFLINE · USE MANUAL MARK' : 'STAND IN FRONT OF THE CAMERA', f ? 'warn' : '');
+  if (!far.length) return prompt('WALK TOWARDS THE CAMERA');
+  const pending = far.filter(x => x.status === 'pending');
+  if (pending.some(x => x.reason?.includes('closer'))) return prompt('KEEP WALKING · LOOK AT THE CAMERA', 'ok');
+  if (pending.length) return prompt(`VERIFYING ${pending.length} STUDENT${pending.length > 1 ? 'S' : ''} · KEEP LOOKING AHEAD`, 'ok');
+  if (far.every(x => x.status === 'too_far')) return prompt('WALK TOWARDS THE CAMERA');
+  if (far.some(x => x.status === 'match')) return prompt('MARKED ✓ · PLEASE MOVE ON', 'ok');
+  prompt('WALK TOWARDS THE CAMERA');
 }
 
-async function handleResult(j, t, crop) {
-  const img = () => crop.toDataURL('image/jpeg', 0.8);
-  const s = j.student_id && state.byId.get(String(j.student_id));
+// ───────────── acting on decisions ─────────────
 
-  if (j.status === 'spoof') { flash('LIVE FACE NEEDED · PHOTO OR SCREEN DETECTED', 'bad', 2500); buzz(); return; }
-  if (j.status === 'unknown') { flash('NOT RECOGNISED · PLEASE SEE THE TEACHER', 'bad', 2000); return; }
-  if (!s) { flash(`ID ${j.student_id} IS ENROLLED BUT NOT IN THE ROSTER`, 'bad', 2500); return; }
+// The face cut out of the frame that was sent, for the side panels.
+function snapshot(f, frameCanvas) {
+  const [x1, y1, x2, y2] = f.box;
+  const side = Math.max(x2 - x1, y2 - y1) * 1.8;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  c.getContext('2d').drawImage(frameCanvas, (x1 + x2) / 2 - side / 2, (y1 + y2) / 2 - side / 2, side, side, 0, 0, 128, 128);
+  return c.toDataURL('image/jpeg', 0.85);
+}
 
-  if (j.status === 'review') {
-    if (!review.some(r => r.id === s.id)) review.unshift({ id: s.id, conf: j.confidence ?? 0, img: img(), reason: j.reason || '' });
+async function handleResult(f, frameCanvas) {
+  const img = () => snapshot(f, frameCanvas);
+  const s = f.student_id && state.byId.get(String(f.student_id));
+
+  if (f.status === 'unknown') { flash('NOT RECOGNISED · PLEASE SEE THE TEACHER', 'bad', 2000); return; }
+  if (!s) { flash(`ID ${f.student_id} IS ENROLLED BUT NOT IN THE ROSTER`, 'bad', 2500); return; }
+
+  if (f.status === 'review' || f.status === 'spoof') {
+    // Never marked without a person checking: one tap on the gate screen.
+    const reason = f.status === 'spoof' ? 'possible photo / screen' : (f.reason || '');
+    if (!review.some(r => r.id === s.id)) review.unshift({ id: s.id, conf: f.confidence ?? 0, img: img(), reason });
     renderReview();
     flash('PLEASE WAIT · TEACHER WILL CONFIRM', 'warn', 1800);
+    if (f.status === 'spoof') buzz();
     return;
   }
 
-  t.name = s.name;
   const existing = recordFor(s.id);
   if (existing && existing.s !== 'A') {
-    showIdent(s, existing, j.confidence, img(), true);
-    flash(`${s.name.toUpperCase()} · ALREADY MARKED ${existing.t}`, 'ok', 2000);
+    showIdent(s, existing, f.confidence, img(), true);
+    flash(`${s.name.toUpperCase()} · ALREADY MARKED ${existing.t}`, 'ok', 1500);
     return;
   }
   const status = arrivalStatus();
-  await mark([s.id], status, { source: 'cam', confidence: j.confidence });
-  showIdent(s, recordFor(s.id), j.confidence, img(), false);
-  flash(`WELCOME, ${s.name.split(' ')[0].toUpperCase()} · ${STATUS[status].toUpperCase()}`, 'ok', 2200);
+  await mark([s.id], status, { source: 'cam', confidence: f.confidence });
+  showIdent(s, recordFor(s.id), f.confidence, img(), false);
+  flash(`WELCOME, ${s.name.split(' ')[0].toUpperCase()} · ${STATUS[status].toUpperCase()}`, 'ok', 1800);
   beep();
 }
 
