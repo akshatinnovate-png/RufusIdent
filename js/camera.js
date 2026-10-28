@@ -14,6 +14,8 @@ const STALE_MS = 1200;         // hide backend boxes older than this (or 2.5x th
 
 let vision, engine, enginePromise, delegate = '', TESS = [];
 
+export const landmarker = () => engine;
+
 export function loadEngine() {
   enginePromise ||= (async () => {
     vision = await import('../vendor/mediapipe/vision_bundle.mjs');
@@ -40,7 +42,7 @@ export function loadEngine() {
   return enginePromise;
 }
 
-function constraints() {
+export function constraints() {
   const id = state.settings.cameraId;
   return {
     audio: false,
@@ -478,7 +480,7 @@ async function handleResult(f, frameCanvas) {
   if (f.status === 'review' || f.status === 'spoof') {
     // Never marked without a person checking: one tap on the gate screen.
     const reason = f.status === 'spoof' ? 'possible photo / screen' : (f.reason || '');
-    if (!review.some(r => r.id === s.id)) review.unshift({ id: s.id, conf: f.confidence ?? 0, img: img(), reason });
+    if (!review.some(r => r.id === s.id)) review.unshift({ id: s.id, conf: f.confidence ?? 0, img: img(), reason, track: f.track, kind: f.status });
     renderReview();
     flash('PLEASE WAIT · TEACHER WILL CONFIRM', 'warn', 1800);
     if (f.status === 'spoof') buzz();
@@ -585,6 +587,10 @@ export function wireCamera() {
       const s = state.byId.get(r.id);
       await mark([r.id], arrivalStatus(), { source: 'cam', confidence: r.conf });
       showIdent(s, recordFor(r.id), r.conf, r.img, false);
+      // The teacher's ✓ teaches the gallery this face (not for a possible photo/screen).
+      if (r.track && r.kind === 'review' && state.settings.backendUrl) {
+        fetch(state.settings.backendUrl.replace(/\/$/, '') + '/review/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ track: r.track, student_id: r.id }) }).catch(() => {});
+      }
       toast(`${s.name} marked ${STATUS[recordFor(r.id).s].toLowerCase()}`);
     }
     renderReview();

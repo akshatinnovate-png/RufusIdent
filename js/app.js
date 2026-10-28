@@ -6,6 +6,7 @@ import { runBoot } from './boot.js';
 import { openCamera, closeCamera, wireCamera, listCameras } from './camera.js';
 import { ask, resetChat, wireMic } from './assistant.js';
 import { startSync, syncNow } from './sync.js';
+import { openStation, closeStation, wireStation } from './station.js';
 import { $, $$, esc, avatar, toast, pct, prettyDate, STATUS_CLASS } from './ui.js';
 
 let route = { view: 'home', id: null };
@@ -21,8 +22,10 @@ function parseHash() {
 function go() {
   const next = parseHash();
   if (route.view === 'camera' && next.view !== 'camera') closeCamera();
+  if (route.view === 'enrol' && next.view !== 'enrol') closeStation();
   route = next;
   if (route.view === 'camera') { openCamera(); return; }
+  if (route.view === 'enrol') { openStation(); return; }
   $$('.view').forEach(v => { v.hidden = v.dataset.view !== route.view; });
   $$('.rail [data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === route.view || (route.view === 'class' && a.dataset.nav === 'classes')));
   render();
@@ -451,6 +454,7 @@ function wire() {
     if (e.key === 'Escape') {
       if (!$('#palette').hidden) closePalette();
       else if (route.view === 'camera' && document.activeElement !== $('#manualInput')) location.hash = '#/home';
+      else if (route.view === 'enrol' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) location.hash = '#/home';
     }
   });
 
@@ -476,7 +480,8 @@ function wire() {
   });
 
   wireCamera();
-  data.onChange(() => { if (route.view !== 'camera') render(); });
+  wireStation();
+  data.onChange(() => { if (route.view !== 'camera' && route.view !== 'enrol') render(); });
 }
 
 // ───────────── start ─────────────

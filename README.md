@@ -178,6 +178,35 @@ Every decision saves the face (with some surroundings):
 
 This is a few MB a day, not every frame.
 
+## Enrolling the whole school: the Enrolment Station
+
+You don't need to collect 64,000 photos by hand. Open the dashboard → rail icon **Enrolment station** (person with +). The webcam runs continuously:
+
+1. **A student steps up** and the screen shows *New student detected*.
+   - If the face is already enrolled, it says so instead, and offers a re-take.
+2. **The operator picks the student.** Pick from the class's **Not yet enrolled** list (right panel) or search by name or admission no. New students can be typed in, and they join the roster.
+3. **Tick *Parent consent received***, then press **Proceed** (or Enter). Without consent, Proceed stays disabled.
+4. **The student follows the prompts:** *Look straight → turn left → turn right* (about 10 s).
+5. **The station shows *Uploaded ✓ · Next please*.** The next student steps up while this one is processed in the background.
+
+**What happens in the background** (`backend/enrolment.py`):
+- **Crash-safe:** frames are written to disk first, so a crash or restart never loses a student. Unfinished work resumes on the next start.
+- **Picking photos:** each frame is checked (one face, big enough, sharp, not turned too far). The best ~20 are picked, spread across the three poses, and saved to `photos/<admission_no>/` at 640 px. That's about 4 GB for the whole school, not 13 GB.
+- **Same pipeline as enrolment:** the picked photos get exactly the same processing as `enroll.bat`, and the results are cached, so `enroll.bat` never redoes them.
+- **Wrong-person check:** frames that don't match the student's straight-on photos (someone else stepped in) are dropped.
+- **Double-enrolment check:**
+  - A face matching **another** student at 0.75 or above is refused ("already enrolled as … check the admission number").
+  - A close but lower match is enrolled with a twins/siblings note, and the gate is extra strict between them.
+- **Live straight away:** the student joins the live gallery at once, with no restart or full re-enrolment.
+- **Thresholds:** they are recalibrated automatically when the queue goes quiet after 50+ new students.
+- **If capture went badly** (too few good frames, someone else in view), the job shows **RE-TAKE**.
+
+The left panel shows the processing queue. The right panel shows each class's progress (*IX-A 32/40*) and who's missing, with *no consent* flagged.
+
+**Rough timing:** about 30 s per student at the station. One station covers a class of 40 in about 20 minutes, and the high school in about 5–6 school days. With 3 laptops running stations against the same backend, it takes about 2 days. Processing takes 15–50 s per student depending on the laptop, and it catches up between classes.
+
+**The system keeps learning at the gate.** When a teacher taps ✓ on a *Needs review* student, that face is added to the student's gallery, so recognition gets better as students change (haircuts, specs).
+
 ## Daily attendance email
 
 Every school day, at a time you choose, the backend emails an Excel workbook to the recipients. It contains:

@@ -106,6 +106,38 @@ class Gallery:
         g.load_adaptive(data_dir)
         return g
 
+    # ───── adding students without a full re-enrolment ─────
+
+    def per_student(self) -> dict[str, list[np.ndarray]]:
+        out = {}
+        for s, sid in enumerate(self.ids):
+            out[sid] = [self.emb[self.photo_start[p]:self.photo_end[p]] for p in range(self.sp_start[s], self.sp_start[s] + self.sp_count[s])]
+        return out
+
+    def with_students(self, updates: dict[str, list[np.ndarray]], best_photo: dict[str, str], pair_threshold: float) -> "Gallery":
+        """A new gallery with these students added or replaced. Thresholds and
+        gate-learned samples carry over; look-alikes are updated for the new students."""
+        merged = self.per_student()
+        merged.update(updates)
+        g = Gallery.build(merged, {**self.best_photo, **best_photo})
+        g.calib = self.calib
+        changed = set(updates)
+        g.lookalikes = {a: [b for b in bs if b not in changed] for a, bs in self.lookalikes.items() if a not in changed}
+        g.lookalikes = {a: bs for a, bs in g.lookalikes.items() if bs}
+        for sid in changed:
+            i = g.index[sid]
+            sims = g.centroid @ g.centroid[i]
+            for j in np.where(sims > pair_threshold)[0]:
+                if j != i:
+                    g.lookalikes.setdefault(sid, []).append(g.ids[j])
+                    g.lookalikes.setdefault(g.ids[j], []).append(sid)
+        if len(self.adapt):
+            keep = [r for r, s in enumerate(self.adapt_owner) if self.ids[s] in g.index]
+            g.adapt = self.adapt[keep]
+            g.adapt_owner = np.asarray([g.index[self.ids[self.adapt_owner[r]]] for r in keep], np.int32)
+            g._index_adaptive()
+        return g
+
     # ───── learning from the gate ─────
 
     def load_adaptive(self, data_dir: str):

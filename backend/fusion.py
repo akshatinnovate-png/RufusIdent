@@ -168,4 +168,6 @@ class Fusion:
         out = {**result, "decided": True}
         if learn is not None:
             out["_learn"] = learn
+        if result["status"] == "review" and t.embs:
+            out["_best"] = t.embs[int(np.argmax(t.weights))]      # for a teacher's ✓ to teach the gallery
         return out

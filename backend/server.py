@@ -5,6 +5,11 @@
 GET  /health                 status, enrolled students, thresholds
 POST /frame                  multipart image (a gate camera frame) -> every face in it, tracked and identified
 POST /reload                 reload the gallery after running enroll.py
+POST /enrol/submit           enrolment station capture (frames + student) -> queued, processed in the background
+POST /enrol/identify         is the face at the station already enrolled?
+GET  /enrol/status           queue, recent jobs, who is enrolled, consent records
+POST /enrol/recalibrate      recompute thresholds now
+POST /review/confirm         a teacher confirmed a gate "needs review": that face teaches the gallery
 GET  /sync/state             what the backend already has (the dashboard pushes the rest)
 POST /sync/roster            the student list
 POST /sync/day/{date}        one day's attendance
@@ -29,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 
 from config import load_config
+from enrolment import EnrolQueue
 from engine import Engine, decode_image
 from fusion import Fusion
 from gallery import Gallery
@@ -46,10 +52,22 @@ store = Store(cfg.data_dir)
 reporter = Reporter(cfg.data_dir, os.path.join(os.path.dirname(cfg.evidence_dir), "reports"), store)
 frame_lock = threading.Lock()          # one frame at a time keeps tracking consistent
 state = {"frames": 0, "learned": 0, "last_adapt_save": time.monotonic(), "verifying_near": False}
+review_faces: dict[str, object] = {}   # track -> best face of a "needs review" decision
+
+
+def _set_gallery(g):
+    global gallery
+    with frame_lock:
+        gallery = g
+
+
+enrol = EnrolQueue(cfg, engine, lambda: gallery, _set_gallery)
+
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
     reporter.start()
+    enrol.start()
     yield
     if gallery is not None and len(gallery.adapt):
         gallery.save_adaptive(cfg.data_dir)      # keep what was learned at the gate
@@ -140,6 +158,11 @@ def frame(image: UploadFile = File(...), gate: str = Form("")):
             if learn is not None and r["student_id"] in gallery.index:
                 gallery.add_adaptive(r["student_id"], learn, cfg.adaptive_per_student)
                 state["learned"] += 1
+            best = r.pop("_best", None)
+            if best is not None:
+                review_faces[item["track"]] = best
+                while len(review_faces) > 300:
+                    review_faces.pop(next(iter(review_faces)))
             if r.get("decided"):
                 _save_evidence(img, f.box, r)
             item.update(r)
@@ -207,6 +230,61 @@ def report_xlsx(date: str = ""):
                     headers={"Content-Disposition": f'attachment; filename="GHS_Attendance_{date}.xlsx"'})
 
 
+# ───────────── enrolment station ─────────────
+
+@app.post("/enrol/submit")
+def enrol_submit(frames: list[UploadFile] = File(...), student_id: str = Form(...), name: str = Form(""),
+                 cls: str = Form(""), section: str = Form(""), consent: str = Form("")):
+    data = [((f.filename or "").split("_", 1)[-1].rsplit(".", 1)[0], f.file.read()) for f in frames]
+    try:
+        return enrol.submit({"id": student_id, "name": name, "cls": cls, "section": section, "consent": consent in ("1", "true", "yes")}, data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/enrol/identify")
+def enrol_identify(image: UploadFile = File(...)):
+    """Is the student now standing at the station already enrolled?"""
+    img = decode_image(image.file.read())
+    g = gallery
+    if img is None or g is None or not len(g.ids):
+        return {"known": False}
+    face, _ = engine.main_face(img, 320)
+    if face is None:
+        return {"known": False}
+    engine.describe(img, face, tta=False, liveness=False)
+    best = g.match(face.emb, cfg.top_k, n=1)
+    if best and best[0][1] >= g.thresholds(True)["t_accept"]:
+        return {"known": True, "student_id": best[0][0], "score": round(best[0][1], 3)}
+    return {"known": False}
+
+
+@app.get("/enrol/status")
+def enrol_status():
+    return enrol.status()
+
+
+@app.post("/enrol/recalibrate")
+def enrol_recalibrate():
+    if gallery is None:
+        raise HTTPException(400, "No students enrolled yet.")
+    threading.Thread(target=enrol.recalibrate, daemon=True).start()
+    return {"ok": True, "message": "Recalibrating in the background (about a minute for a full school)."}
+
+
+@app.post("/review/confirm")
+def review_confirm(body: dict = Body(...)):
+    """A teacher confirmed a 'needs review' student at the gate: remember that face."""
+    emb = review_faces.pop(str(body.get("track", "")), None)
+    sid = str(body.get("student_id", ""))
+    if emb is None or gallery is None or sid not in gallery.index:
+        return {"ok": True, "learned": False}
+    with frame_lock:
+        gallery.add_adaptive(sid, emb, cfg.adaptive_per_student)
+        gallery.save_adaptive(cfg.data_dir)
+    return {"ok": True, "learned": True}
+
+
 @app.get("/photo/{student_id}")
 def photo(student_id: str):
     rel = gallery.best_photo.get(student_id) if gallery else None
@@ -230,6 +308,8 @@ def student(student_id: str):
 def _port_free(host: str, port: int) -> bool:
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        if os.name != "nt":      # same as uvicorn: a port in TIME_WAIT after a restart is free (Windows has no such state)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             s.bind((host, port))
             return True

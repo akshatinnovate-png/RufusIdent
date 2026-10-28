@@ -157,3 +157,50 @@ body.hud-on { overflow: hidden; }
   .hud-top { grid-template-columns: 1fr auto; }
   .hud-status { display: none; }
 }
+
+/* ───────────── enrolment station ───────────── */
+.station #stVideo, .station #stCanvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.station #stVideo { object-fit: cover; transform: scaleX(-1); filter: saturate(.9); }
+.st-jobs, .st-missing { list-style: none; margin: 0; padding: 0; font-size: 12px; max-height: 60vh; overflow: auto; }
+.st-jobs li { padding: 7px 0; border-bottom: 1px dashed rgba(61, 255, 162, .12); display: grid; grid-template-columns: 18px 1fr; gap: 8px; }
+.st-jobs li b { font-family: var(--sans); color: #fff; font-weight: 600; }
+.st-jobs li span { display: block; color: rgba(217, 251, 233, .6); font-size: 11px; margin-top: 2px; }
+.st-jobs i { font-style: normal; }
+.st-jobs .done i { color: var(--neon); } .st-jobs .failed i { color: var(--red); } .st-jobs .processing i, .st-jobs .queued i { color: var(--amber); }
+.st-jobs .warn span { color: var(--amber); }
+.st-jobs button, .st-missing button { margin-top: 5px; background: transparent; border: 1px solid currentColor; color: var(--amber); border-radius: 4px; font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; }
+.st-classes { display: grid; gap: 6px; max-height: 32vh; overflow: auto; }
+.st-classes button { display: grid; grid-template-columns: 48px 1fr 52px; gap: 8px; align-items: center; background: transparent; border: 0; color: #fff; font: inherit; font-size: 12px; cursor: pointer; padding: 2px 0; text-align: left; }
+.st-classes button.on b { color: var(--neon); }
+.st-classes i { height: 6px; background: rgba(255, 255, 255, .08); border-radius: 3px; position: relative; overflow: hidden; }
+.st-classes i::after { content: ''; position: absolute; inset: 0; width: var(--w); background: linear-gradient(90deg, var(--cyan), var(--neon)); }
+.st-classes em { font-style: normal; text-align: right; color: rgba(217, 251, 233, .7); }
+.st-missing-panel { flex: 1; min-height: 0; }
+.st-missing li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed rgba(61, 255, 162, .12); }
+.st-missing li b { font-family: var(--sans); color: #fff; font-weight: 500; }
+.st-missing li button { margin: 0; color: var(--neon); }
+
+.st-form {
+  position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); z-index: 3;
+  background: rgba(3, 20, 13, .92); border: 1px solid var(--neon); border-radius: 8px; padding: 16px 18px; backdrop-filter: blur(10px);
+}
+.st-form h3 { margin: 0 0 10px; font-family: var(--cond); letter-spacing: .14em; color: var(--neon); font-size: 20px; }
+.st-form input:not([type=checkbox]) { width: 100%; background: rgba(0, 0, 0, .5); border: 1px solid var(--edge); border-radius: 5px; color: #fff; padding: 9px 11px; font-family: var(--mono); font-size: 13px; outline: 0; }
+.st-form input:focus { border-color: var(--neon); }
+.st-results { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; max-height: 150px; overflow: auto; }
+.st-results button { display: flex; justify-content: space-between; gap: 10px; background: rgba(0, 0, 0, .4); border: 1px solid var(--edge); color: #fff; border-radius: 5px; padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer; text-align: left; }
+.st-results button:hover { border-color: var(--neon); }
+.st-results span { color: rgba(217, 251, 233, .6); }
+.st-fields { display: grid; grid-template-columns: 1fr 2fr .7fr .7fr; gap: 8px; margin-top: 6px; }
+.st-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 10px; letter-spacing: .14em; color: rgba(217, 251, 233, .6); }
+.st-consent { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; font-size: 13px; color: #fff; cursor: pointer; }
+.st-consent input { width: 18px; height: 18px; accent-color: #3dffa2; }
+.st-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+.st-note { font-size: 11.5px; color: var(--amber); }
+.st-go { background: var(--neon); color: #022014; border: 0; border-radius: 5px; padding: 10px 20px; font-family: var(--cond); font-weight: 800; font-size: 18px; letter-spacing: .12em; cursor: pointer; }
+.st-go:disabled { opacity: .35; cursor: not-allowed; }
+.st-steps { display: flex; gap: 8px; }
+.st-steps span { font-size: 11px; letter-spacing: .2em; padding: 5px 12px; border: 1px solid rgba(255, 255, 255, .2); border-radius: 999px; color: rgba(255, 255, 255, .5); position: relative; overflow: hidden; }
+.st-steps span::before { content: ''; position: absolute; inset: 0; width: var(--p, 0%); background: rgba(61, 255, 162, .25); transition: width .15s; }
+.st-steps span.on { color: #fff; border-color: var(--neon); }
+.st-steps span.ok { color: var(--neon); border-color: var(--neon); }

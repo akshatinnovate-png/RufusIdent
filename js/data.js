@@ -282,6 +282,7 @@ const COLS = {
   father: ['father', 'father name', 'father_name', "father's name", 'fathers name', 'guardian', 'parent'],
   phone: ['phone', 'phone no', 'phone_no', 'mobile', 'mobile no', 'contact', 'contact no'],
   note: ['note', 'notes', 'remarks', 'about'],
+  consent: ['consent', 'parent consent', 'parental consent', 'consent received', 'consent_received'],
 };
 
 export function normaliseRoster(rows) {
@@ -326,6 +327,15 @@ async function replaceRoster(list, demo) {
   await idbSet('meta', { demo });
   changed();
 }
+
+// Add new students or update existing ones (enrolment station).
+export async function upsertStudents(list) {
+  const map = new Map(state.roster.map(s => [s.id, s]));
+  for (const s of list) map.set(s.id, { ...(map.get(s.id) || {}), ...s });
+  await replaceRoster([...map.values()], state.demo);
+}
+
+export const hasConsent = s => /^(y|yes|true|1|✓|done|received)$/i.test(String(s?.consent || '').trim());
 
 export async function wipe() {
   await idbClear();

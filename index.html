@@ -54,6 +54,9 @@
     <a class="rail-btn" href="#/camera" data-nav="camera" title="Gate camera">
       <svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><circle cx="12" cy="11" r="3"/><path d="M7.5 17a5 5 0 0 1 9 0"/></svg>
     </a>
+    <a class="rail-btn" href="#/enrol" data-nav="enrol" title="Enrolment station">
+      <svg viewBox="0 0 24 24"><circle cx="10" cy="8" r="4"/><path d="M3 20a7 7 0 0 1 12.5-4.3M19 14v6M16 17h6"/></svg>
+    </a>
     <a class="rail-btn" href="#/classes" data-nav="classes" title="Class registers">
       <svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/></svg>
     </a>
@@ -253,6 +256,66 @@
       <input id="manualInput" placeholder="Manual mark: name or admission no." autocomplete="off">
       <div id="manualResults" class="manual-results"></div>
     </div>
+  </footer>
+</div>
+
+<!-- ───────────── ENROLMENT STATION ───────────── -->
+<div id="station" class="hud station" hidden>
+  <video id="stVideo" playsinline muted></video>
+  <canvas id="stCanvas"></canvas>
+  <div class="hud-scan" aria-hidden="true"></div>
+  <div class="hud-vignette" aria-hidden="true"></div>
+
+  <header class="hud-top">
+    <div class="hud-brand">
+      <img src="assets/crest.png" alt="">
+      <div><b>GULMOHUR HIGH SCHOOL</b><span>ENROLMENT STATION</span></div>
+    </div>
+    <div class="hud-status" id="stStatus">STARTING</div>
+    <div class="hud-clock"><b id="stDone">0</b><span>ENROLLED THIS SESSION</span></div>
+    <a class="hud-exit" href="#/home" title="Back to dashboard">✕</a>
+  </header>
+
+  <aside class="hud-col left">
+    <div class="panel">
+      <h4>BACKGROUND PROCESSING <span id="stQueue">—</span></h4>
+      <ol class="st-jobs" id="stJobs"><li class="dim">Nothing yet.</li></ol>
+    </div>
+  </aside>
+
+  <aside class="hud-col right">
+    <div class="panel">
+      <h4>CLASS PROGRESS <span id="stTotal"></span></h4>
+      <div class="st-classes" id="stClasses"></div>
+    </div>
+    <div class="panel st-missing-panel">
+      <h4>NOT YET ENROLLED <span id="stMissingTitle"></span></h4>
+      <ol class="st-missing" id="stMissing"><li class="dim">Pick a class above.</li></ol>
+    </div>
+  </aside>
+
+  <section class="st-form" id="stForm" hidden>
+    <h3>NEW STUDENT DETECTED</h3>
+    <input id="stSearch" placeholder="Search name or admission no. (or pick from “Not yet enrolled”)" autocomplete="off">
+    <div class="st-results" id="stResults"></div>
+    <div class="st-fields">
+      <label>ADMISSION NO <input id="stId" autocomplete="off"></label>
+      <label class="wide">NAME <input id="stName" autocomplete="off"></label>
+      <label>CLASS <input id="stCls" placeholder="IX" autocomplete="off"></label>
+      <label>SECTION <input id="stSec" placeholder="A" autocomplete="off"></label>
+    </div>
+    <label class="st-consent"><input type="checkbox" id="stConsent"> Parent consent received</label>
+    <div class="st-actions">
+      <span class="st-note" id="stNote"></span>
+      <button class="st-go" id="stGo" disabled>PROCEED ▸</button>
+    </div>
+  </section>
+
+  <footer class="hud-bottom">
+    <div class="st-steps" id="stSteps" hidden>
+      <span data-step="straight">STRAIGHT</span><span data-step="left">LEFT</span><span data-step="right">RIGHT</span>
+    </div>
+    <div class="hud-prompt" id="stPrompt">STEP UP TO THE CAMERA</div>
   </footer>
 </div>
 

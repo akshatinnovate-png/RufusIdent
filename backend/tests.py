@@ -159,6 +159,28 @@ class Decisions(unittest.TestCase):
         self.assertEqual(g.match(self.probe(40))[0][0], "1040")
 
 
+class IncrementalEnrolment(unittest.TestCase):
+    def test_add_replace_keep_learning(self):
+        g, c = school(n=50)
+        g.add_adaptive("1003", unit(c[3] + rng.normal(scale=0.02, size=512)), 5)
+        newcomer = unit(rng.normal(size=512))
+        photos = [np.stack([p, p]) for p in unit(newcomer + rng.normal(scale=0.03, size=(20, 512)))]
+        g2 = g.with_students({"2000": photos}, {"2000": "2000/a.jpg"}, 0.55)
+        self.assertEqual(len(g2.ids), 51)
+        self.assertEqual(g2.match(unit(newcomer + rng.normal(scale=0.03, size=512)))[0][0], "2000")
+        self.assertEqual(g2.match(unit(c[7] + rng.normal(scale=0.03, size=512)))[0][0], "1007")   # others untouched
+        self.assertEqual(int((g2.adapt_owner == g2.index["1003"]).sum()), 1)                     # gate learning kept
+        self.assertEqual(g2.calib, g.calib)
+        # a re-take replaces the student's photos instead of adding to them
+        g3 = g2.with_students({"2000": photos[:8]}, {}, 0.55)
+        self.assertEqual(int(g3.sp_count[g3.index["2000"]]), 8)
+        # a twin enrolled later is linked as a look-alike both ways
+        twin = [np.stack([p, p]) for p in unit(c[5] * 0.9 + rng.normal(scale=0.03, size=(20, 512)))]
+        g4 = g3.with_students({"2001": twin}, {}, 0.55)
+        self.assertIn("1005", g4.lookalikes.get("2001", []))
+        self.assertIn("2001", g4.lookalikes.get("1005", []))
+
+
 class Tracking(unittest.TestCase):
     def test_four_people_keep_their_ids(self):
         from tracker import Tracker
