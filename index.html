@@ -277,6 +277,10 @@
   </header>
 
   <aside class="hud-col left">
+    <div class="panel st-outbox" id="stOutbox" hidden>
+      <h4>SAVED ON THIS LAPTOP <span id="stOutboxCount"></span></h4>
+      <ol class="st-jobs" id="stOutboxList"></ol>
+    </div>
     <div class="panel">
       <h4>BACKGROUND PROCESSING <span id="stQueue">—</span></h4>
       <ol class="st-jobs" id="stJobs"><li class="dim">Nothing yet.</li></ol>
@@ -286,6 +290,7 @@
   <aside class="hud-col right">
     <div class="panel">
       <h4>CLASS PROGRESS <span id="stTotal"></span></h4>
+      <button class="st-report" id="stReport">⬇ DOWNLOAD ENROLMENT REPORT</button>
       <div class="st-classes" id="stClasses"></div>
     </div>
     <div class="panel st-missing-panel">

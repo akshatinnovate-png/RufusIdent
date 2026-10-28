@@ -205,6 +205,31 @@ The left panel shows the processing queue. The right panel shows each class's pr
 
 **Rough timing:** about 30 s per student at the station. One station covers a class of 40 in about 20 minutes, and the high school in about 5–6 school days. With 3 laptops running stations against the same backend, it takes about 2 days. Processing takes 15–50 s per student depending on the laptop, and it catches up between classes.
 
+### Reliability: a capture is never lost
+
+| If… | then… |
+|---|---|
+| the backend is down, the Wi-Fi drops, or an upload times out | Every capture is saved on the **station laptop first** (browser database). It survives a reload, a restart or a power cut, and uploads automatically with retries. The student can leave as soon as the screen says *SAVED ✓ · NEXT PLEASE*. The panel *SAVED ON THIS LAPTOP* shows anything still waiting. |
+| an upload succeeds but the reply is lost, so it's sent again | Each capture has a unique id; the backend accepts it once. |
+| the backend crashes while receiving | Frames land in a temporary folder that only becomes a job when complete; the station still has the capture and resends it. |
+| the backend crashes while processing | Jobs are on disk and resume on the next start. |
+| processing keeps erroring (bug, model, disk) | It's retried 3 times, then the raw frames are **parked, never deleted**, with a **REPROCESS** button. |
+| it crashes right after a student was enrolled | A write-ahead journal (`data/enrol_journal/`) restores them on start. |
+| the gallery file gets corrupted | Saves are atomic, with a `.prev` backup. Journal entries are kept until they're in both files, so falling back loses no one. |
+| the disk is nearly full | New captures are refused with a clear message; the station keeps them until there's space. |
+| a capture "worked" but the face isn't distinctive enough | A self-check after enrolment: the student must be recognised as themselves, otherwise *re-take advised*. |
+
+Crash-tested by killing the backend with `kill -9` (like pulling the plug):
+- mid-queue
+- right after an enrolment
+- after corrupting the gallery file
+
+No student was lost in any case, and the station was tested capturing while the backend was down.
+
+**End of each day:** press **⬇ Download enrolment report** on the station. It gives an Excel file of every student showing enrolled/verified, photos, consent and notes, plus a *To do* sheet of anyone missing, failed, unverified or without consent.
+
+**Backups:** `photos/` is the master copy, because the gallery can always be rebuilt from it with `enroll.bat`. Copy `photos/` and `backend/data/` to OneDrive or a USB drive at the end of each enrolment day.
+
 **The system keeps learning at the gate.** When a teacher taps ✓ on a *Needs review* student, that face is added to the student's gallery, so recognition gets better as students change (haircuts, specs).
 
 ## Daily attendance email

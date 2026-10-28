@@ -15,6 +15,7 @@ student) so it gets used to the real gate camera and lighting.
 """
 import json
 import os
+import uuid
 
 import numpy as np
 
@@ -80,23 +81,53 @@ class Gallery:
         self.centroid = c / (np.linalg.norm(c, axis=1, keepdims=True) + 1e-9)
 
     def save(self, data_dir: str):
+        """Crash-safe: both files are written next to the real ones, the current pair
+        is kept as *.prev, then the new pair is swapped in. A shared save id lets
+        load() notice a half-finished save and fall back to the previous pair."""
         os.makedirs(data_dir, exist_ok=True)
-        np.savez_compressed(os.path.join(data_dir, GALLERY_NPZ), emb=self.emb.astype(np.float16), row_variant=self.row_variant,
-                            photo_start=self.photo_start, photo_owner=self.photo_owner, sp_start=self.sp_start, sp_count=self.sp_count)
-        with open(os.path.join(data_dir, GALLERY_JSON), "w", encoding="utf-8") as f:
-            json.dump({"version": 2, "ids": self.ids, "best_photo": self.best_photo, "lookalikes": self.lookalikes, "calib": self.calib}, f, indent=1)
+        npz, js = os.path.join(data_dir, GALLERY_NPZ), os.path.join(data_dir, GALLERY_JSON)
+        save_id = uuid.uuid4().hex
+        with open(npz + ".tmp", "wb") as f:
+            np.savez_compressed(f, emb=self.emb.astype(np.float16), row_variant=self.row_variant, photo_start=self.photo_start,
+                                photo_owner=self.photo_owner, sp_start=self.sp_start, sp_count=self.sp_count, save_id=np.array(save_id))
+            f.flush(); os.fsync(f.fileno())
+        with open(js + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"version": 2, "save_id": save_id, "ids": self.ids, "best_photo": self.best_photo,
+                       "lookalikes": self.lookalikes, "calib": self.calib}, f, indent=1)
+            f.flush(); os.fsync(f.fileno())
+        if os.path.exists(npz) and os.path.exists(js) and Gallery._read(npz, js) is not None:
+            os.replace(npz, npz + ".prev")
+            os.replace(js, js + ".prev")
+        os.replace(npz + ".tmp", npz)
+        os.replace(js + ".tmp", js)
+
+    @staticmethod
+    def _read(npz: str, js: str):
+        try:
+            with open(js, encoding="utf-8") as f:
+                meta = json.load(f)
+            if meta.get("version") != 2:
+                return None
+            z = np.load(npz)
+            arrays = {k: z[k] for k in z.files}
+            if "save_id" in arrays and meta.get("save_id") and str(arrays["save_id"]) != meta["save_id"]:
+                return None            # the two files come from different saves
+            if len(meta["ids"]) != len(arrays["sp_start"]) or (len(arrays["photo_start"]) and arrays["photo_start"][-1] >= len(arrays["emb"])):
+                return None
+            return meta, arrays
+        except (OSError, ValueError, KeyError, json.JSONDecodeError, EOFError):
+            return None
 
     @classmethod
     def load(cls, data_dir: str) -> "Gallery | None":
         npz, js = os.path.join(data_dir, GALLERY_NPZ), os.path.join(data_dir, GALLERY_JSON)
-        if not (os.path.exists(npz) and os.path.exists(js)):
+        got = cls._read(npz, js) if os.path.exists(npz) and os.path.exists(js) else None
+        if got is None and os.path.exists(npz + ".prev") and os.path.exists(js + ".prev"):
+            got = cls._read(npz + ".prev", js + ".prev")       # last save was interrupted: use the one before
+        if got is None:
             return None
-        with open(js, encoding="utf-8") as f:
-            meta = json.load(f)
-        if meta.get("version") != 2:
-            return None          # made by an older version: run enroll.py again
+        meta, z = got
         g = cls()
-        z = np.load(npz)
         g.emb = z["emb"].astype(np.float32)
         g.emb /= np.linalg.norm(g.emb, axis=1, keepdims=True) + 1e-9
         g.row_variant, g.photo_start, g.photo_owner = z["row_variant"], z["photo_start"], z["photo_owner"]
@@ -150,8 +181,10 @@ class Gallery:
         self._index_adaptive()
 
     def save_adaptive(self, data_dir: str):
-        np.savez_compressed(os.path.join(data_dir, ADAPTIVE_NPZ), emb=self.adapt.astype(np.float16),
-                            owner_ids=np.asarray([self.ids[i] for i in self.adapt_owner], dtype=str))
+        path = os.path.join(data_dir, ADAPTIVE_NPZ)
+        with open(path + ".tmp", "wb") as f:
+            np.savez_compressed(f, emb=self.adapt.astype(np.float16), owner_ids=np.asarray([self.ids[i] for i in self.adapt_owner], dtype=str))
+        os.replace(path + ".tmp", path)
 
     def add_adaptive(self, sid: str, emb: np.ndarray, per_student: int):
         s = self.index[sid]

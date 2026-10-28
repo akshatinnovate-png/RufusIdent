@@ -8,6 +8,7 @@ POST /reload                 reload the gallery after running enroll.py
 POST /enrol/submit           enrolment station capture (frames + student) -> queued, processed in the background
 POST /enrol/identify         is the face at the station already enrolled?
 GET  /enrol/status           queue, recent jobs, who is enrolled, consent records
+POST /enrol/reprocess        retry a parked job whose frames were kept after repeated errors
 POST /enrol/recalibrate      recompute thresholds now
 POST /review/confirm         a teacher confirmed a gate "needs review": that face teaches the gallery
 GET  /sync/state             what the backend already has (the dashboard pushes the rest)
@@ -62,6 +63,7 @@ def _set_gallery(g):
 
 
 enrol = EnrolQueue(cfg, engine, lambda: gallery, _set_gallery)
+gallery = enrol.replay(gallery)         # students enrolled after the last full save (write-ahead journal)
 
 
 @contextlib.asynccontextmanager
@@ -112,7 +114,7 @@ def health():
 @app.post("/reload")
 def reload():
     global gallery
-    g = Gallery.load(cfg.data_dir)
+    g = enrol.replay(Gallery.load(cfg.data_dir))
     if g is None:
         raise HTTPException(404, "No gallery yet (or made by an older version). Run enroll.py.")
     with frame_lock:
@@ -234,10 +236,21 @@ def report_xlsx(date: str = ""):
 
 @app.post("/enrol/submit")
 def enrol_submit(frames: list[UploadFile] = File(...), student_id: str = Form(...), name: str = Form(""),
-                 cls: str = Form(""), section: str = Form(""), consent: str = Form("")):
+                 cls: str = Form(""), section: str = Form(""), consent: str = Form(""), capture_id: str = Form("")):
     data = [((f.filename or "").split("_", 1)[-1].rsplit(".", 1)[0], f.file.read()) for f in frames]
     try:
-        return enrol.submit({"id": student_id, "name": name, "cls": cls, "section": section, "consent": consent in ("1", "true", "yes")}, data)
+        return enrol.submit({"id": student_id, "name": name, "cls": cls, "section": section, "consent": consent in ("1", "true", "yes")},
+                            data, capture_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(507, str(e))          # disk problem: the station keeps the capture and retries
+
+
+@app.post("/enrol/reprocess")
+def enrol_reprocess(body: dict = Body(...)):
+    try:
+        return enrol.reprocess(str(body.get("job", "")))
     except ValueError as e:
         raise HTTPException(400, str(e))
 

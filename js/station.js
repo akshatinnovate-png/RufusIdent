@@ -28,7 +28,8 @@ let sessionCount = 0;
 let status = { enrolled: {}, students: {}, jobs: [], queue: 0 };
 let selectedClass = null;
 let current = null;             // the student being enrolled
-let pendingRetry = null;        // frames kept if an upload failed
+let outbox = [];                // captures saved on this laptop, not yet accepted by the backend
+let flushing = false, flushTimer = null, backoff = 5000;
 
 const base = () => state.settings.backendUrl?.replace(/\/$/, '');
 
@@ -55,6 +56,9 @@ export async function openStation() {
   loop();
   refresh();
   poll = setInterval(refresh, 2000);
+  outbox = await obAll().catch(() => []);
+  renderOutbox();
+  flush();
 }
 
 export function closeStation() {
@@ -300,38 +304,114 @@ function grab(f, key) {
   c.width = c.height = Math.min(CROP_PX, Math.round(side));
   c.getContext('2d').drawImage(video, x0, y0, side, side, 0, 0, c.width, c.height);
   const slot = { phase: key, blob: null };
+  slot.ready = new Promise(res => c.toBlob(b => { slot.blob = b; res(); }, 'image/jpeg', 0.92));
   shots.push(slot);
-  c.toBlob(b => { slot.blob = b; }, 'image/jpeg', 0.92);
 }
 
-async function upload(retry = null) {
+// ───────────── save locally first, then upload (never lose a capture) ─────────────
+
+const OB_DB = 'rufusident-outbox', OB_STORE = 'captures';
+let obDb;
+function ob(mode, fn) {
+  obDb ||= new Promise((res, rej) => {
+    const r = indexedDB.open(OB_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(OB_STORE, { keyPath: 'id' });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  return obDb.then(d => new Promise((res, rej) => {
+    const t = d.transaction(OB_STORE, mode);
+    const out = fn(t.objectStore(OB_STORE));
+    t.oncomplete = () => res(out?.result);
+    t.onerror = () => rej(t.error);
+  }));
+}
+const obPut = item => ob('readwrite', s => s.put(item));
+const obDel = id => ob('readwrite', s => s.delete(id));
+const obAll = () => ob('readonly', s => s.getAll()).then(list => (list || []).sort((a, b) => a.created - b.created));
+
+async function upload() {
   setMode('upload');
-  say('UPLOADING…', 'ok');
-  const job = retry || { student: current, shots };
-  await new Promise(r => setTimeout(r, 150));                             // let the last JPEGs finish
-  const fd = new FormData();
-  fd.append('student_id', job.student.id);
-  fd.append('name', job.student.name);
-  fd.append('cls', job.student.cls);
-  fd.append('section', job.student.section);
-  fd.append('consent', 'yes');
-  job.shots.filter(x => x.blob).forEach((x, i) => fd.append('frames', x.blob, `${String(i).padStart(3, '0')}_${x.phase}.jpg`));
+  say('SAVING…', 'ok');
+  await Promise.all(shots.map(x => x.ready));                             // every frame fully encoded
+  const item = {
+    id: crypto.randomUUID(), created: Date.now(), attempts: 0, error: null,
+    student: { id: current.id, name: current.name, cls: current.cls, section: current.section },
+    shots: shots.filter(x => x.blob).map(x => ({ phase: x.phase, blob: x.blob })),
+  };
   try {
-    const res = await fetch(base() + '/enrol/submit', { method: 'POST', body: fd, signal: AbortSignal.timeout(30000) });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
-    pendingRetry = null;
-    await upsertStudents([job.student]);                                  // new students join the roster; consent recorded
-    sessionCount++;
-    $('#stDone').textContent = sessionCount;
-    say(`UPLOADED ✓ ${job.student.name.split(' ')[0].toUpperCase()} · NEXT PLEASE`, 'ok');
-    setMode('done');
-    refresh();
+    await obPut(item);                                                    // on this laptop's disk before anything else
   } catch (e) {
-    pendingRetry = job;
-    say(`UPLOAD FAILED · ${e.message.slice(0, 50)} · PRESS R TO RETRY`, 'bad');
-    mode = 'done';
+    say(`COULD NOT SAVE ON THIS LAPTOP · ${e.message.slice(0, 40)} · PLEASE RE-TAKE`, 'bad');
+    setMode('detected');
+    return;
   }
+  outbox.push(item);
+  await upsertStudents([{ ...item.student, consent: 'yes' }]).catch(() => {});   // roster + consent, even if offline
+  sessionCount++;
+  $('#stDone').textContent = sessionCount;
+  say(`SAVED ✓ ${item.student.name.split(' ')[0].toUpperCase()} · NEXT PLEASE`, 'ok');
+  setMode('done');
+  renderOutbox();
+  flush();
+}
+
+// Upload everything still on this laptop. A capture is removed only once the
+// backend has written it to its own disk; retries are safe (same capture id).
+async function flush() {
+  clearTimeout(flushTimer);
+  if (flushing || !running) return;
+  flushing = true;
+  let stalled = false;
+  try {
+    for (const item of [...outbox]) {
+      if (item.error && item.permanent) continue;                        // needs the operator (see panel)
+      const fd = new FormData();
+      fd.append('capture_id', item.id);
+      fd.append('student_id', item.student.id);
+      fd.append('name', item.student.name);
+      fd.append('cls', item.student.cls);
+      fd.append('section', item.student.section);
+      fd.append('consent', 'yes');
+      item.shots.forEach((x, i) => fd.append('frames', x.blob, `${String(i).padStart(3, '0')}_${x.phase}.jpg`));
+      let res, detail = '';
+      try {
+        res = await fetch(base() + '/enrol/submit', { method: 'POST', body: fd, signal: AbortSignal.timeout(60000) });
+        if (!res.ok) detail = (await res.json().catch(() => ({}))).detail || `HTTP ${res.status}`;
+      } catch (e) {
+        detail = e.name === 'TimeoutError' ? 'timed out' : 'backend not reachable';
+      }
+      if (res?.ok) {
+        await obDel(item.id);
+        outbox = outbox.filter(x => x.id !== item.id);
+        backoff = 5000;
+        continue;
+      }
+      item.attempts++;
+      item.error = detail;
+      item.permanent = res?.status === 400;                              // bad data: retrying won't help
+      await obPut(item).catch(() => {});
+      if (!item.permanent) { stalled = true; break; }                     // backend/network problem: try again later
+    }
+  } finally {
+    flushing = false;
+    renderOutbox();
+    if (stalled || outbox.some(x => !x.permanent)) {
+      backoff = stalled ? Math.min(backoff * 2, 60000) : 5000;
+      flushTimer = setTimeout(flush, backoff);
+    }
+    refresh();
+  }
+}
+
+function renderOutbox() {
+  const el = $('#stOutbox');
+  const waiting = outbox.filter(x => !x.permanent), stuck = outbox.filter(x => x.permanent);
+  el.hidden = !outbox.length;
+  $('#stOutboxCount').textContent = outbox.length ? `${outbox.length}` : '';
+  $('#stOutboxList').innerHTML =
+    waiting.map(x => `<li><b>${esc(x.student.name)}</b> ${esc(`${x.student.cls}-${x.student.section}`)}<span>${x.error ? `waiting to upload · ${esc(x.error)} · retrying automatically` : 'uploading…'}</span></li>`).join('') +
+    stuck.map(x => `<li class="bad"><b>${esc(x.student.name)}</b><span>${esc(x.error)}</span><button data-discard="${esc(x.id)}">DISCARD</button></li>`).join('');
 }
 
 // ───────────── side panels ─────────────
@@ -359,7 +439,7 @@ function renderJobs() {
       <i>${icon[j.state] || '?'}</i>
       <div><b>${esc(j.student.name || j.student.id)}</b> ${esc(j.student.cls ? `${j.student.cls}-${j.student.section}` : '')}
         <span>${esc(j.message || j.state)}</span>
-        ${j.state === 'failed' || j.warnings?.length ? `<button data-retake="${esc(j.student.id)}">RE-TAKE</button>` : ''}
+        ${j.reprocessable ? `<button data-reprocess="${esc(j.id)}">REPROCESS</button>` : j.state === 'failed' || j.warnings?.length ? `<button data-retake="${esc(j.student.id)}">RE-TAKE</button>` : ''}
       </div>
     </li>`).join('') : '<li class="dim">Nothing yet.</li>';
 }
@@ -387,6 +467,30 @@ function renderMissing() {
       <button data-pick="${esc(s.id)}">ENROL</button></li>`).join('') : '<li class="dim">Everyone in this class is enrolled ✓</li>';
 }
 
+// End-of-day check: every roster student and where they stand.
+function downloadReport() {
+  if (!window.XLSX) return toast('Excel engine not loaded', { kind: 'warn' });
+  const rows = state.classes.flatMap(k => studentsIn(k).map(s => {
+    const m = status.students[s.id] || {};
+    const enrolled = isEnrolled(s.id);
+    const waiting = outbox.some(x => x.student.id === s.id);
+    return {
+      Class: k, Roll: Number(s.roll) || s.roll || '', 'Admission No': s.id, Name: s.name,
+      Status: enrolled ? (m.verified === false ? 'Enrolled — re-take advised' : 'Enrolled') : waiting ? 'Captured, waiting to upload' : m.last_state === 'failed' ? 'FAILED — re-take' : 'Not enrolled',
+      Photos: status.enrolled[s.id]?.photos ?? '', Verified: m.verified === true ? 'Yes' : m.verified === false ? 'No' : '',
+      Consent: hasConsent(s) || m.consent ? 'Yes' : 'NO', Notes: (m.warnings || []).join('; ') || (m.last_state === 'failed' ? m.last_message : ''),
+      'Enrolled at': m.enrolled_at || '',
+    };
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 8 }, { wch: 6 }, { wch: 14 }, { wch: 26 }, { wch: 28 }, { wch: 7 }, { wch: 8 }, { wch: 8 }, { wch: 50 }, { wch: 20 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Enrolment');
+  const todo = rows.filter(r => !r.Status.startsWith('Enrolled') || r.Verified === 'No' || r.Consent === 'NO');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(todo.length ? todo : [{ Note: 'Everyone is enrolled, verified and has consent ✓' }]), 'To do');
+  XLSX.writeFile(wb, `GHS_Enrolment_${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
 // ───────────── wiring (once) ─────────────
 
 export function wireStation() {
@@ -399,11 +503,23 @@ export function wireStation() {
   for (const id of ['stId', 'stName', 'stCls', 'stSec']) $('#' + id).addEventListener('input', validate);
   $('#stConsent').addEventListener('change', validate);
   $('#stGo').addEventListener('click', () => { if (!$('#stGo').disabled) startCapture(); });
+  $('#stReport').addEventListener('click', downloadReport);
   $('#station').addEventListener('click', e => {
     const pick = e.target.closest('[data-pick]');
     if (pick) { const s = state.byId.get(pick.dataset.pick); if (s) fillForm(s); return; }
     const cls = e.target.closest('[data-cls]');
     if (cls) { selectedClass = cls.dataset.cls; renderClasses(); return; }
+    const rep = e.target.closest('[data-reprocess]');
+    if (rep) {
+      fetch(base() + '/enrol/reprocess', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job: rep.dataset.reprocess }) })
+        .then(r => r.json()).then(() => { toast('Re-queued'); refresh(); }).catch(() => toast('Backend not reachable', { kind: 'warn' }));
+      return;
+    }
+    const discard = e.target.closest('[data-discard]');
+    if (discard && confirm('Discard this capture? The student will need to be captured again.')) {
+      obDel(discard.dataset.discard).then(() => { outbox = outbox.filter(x => x.id !== discard.dataset.discard); renderOutbox(); });
+      return;
+    }
     const retake = e.target.closest('[data-retake]');
     if (retake) {
       const s = state.byId.get(retake.dataset.retake) || status.jobs.find(j => j.student.id === retake.dataset.retake)?.student;
@@ -413,6 +529,7 @@ export function wireStation() {
   addEventListener('keydown', e => {
     if ($('#station').hidden) return;
     if (e.key === 'Enter' && mode === 'detected' && document.activeElement?.id !== 'stSearch' && !$('#stGo').disabled) startCapture();
-    if ((e.key === 'r' || e.key === 'R') && pendingRetry && document.activeElement?.tagName !== 'INPUT') upload(pendingRetry);
   });
+  // Closing the station while captures are still waiting is safe (they're on disk), but say so.
+  addEventListener('beforeunload', e => { if (outbox.length) { e.preventDefault(); e.returnValue = ''; } });
 }

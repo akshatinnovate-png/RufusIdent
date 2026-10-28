@@ -2,6 +2,7 @@
 
     python tests.py
 """
+import os
 import unittest
 
 import numpy as np
@@ -179,6 +180,56 @@ class IncrementalEnrolment(unittest.TestCase):
         g4 = g3.with_students({"2001": twin}, {}, 0.55)
         self.assertIn("1005", g4.lookalikes.get("2001", []))
         self.assertIn("2001", g4.lookalikes.get("1005", []))
+
+
+class Reliability(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cfg = Config(data_dir=self.tmp.name, photos_dir=self.tmp.name + "/photos")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def queue(self, holder):
+        from enrolment import EnrolQueue
+        return EnrolQueue(self.cfg, None, lambda: holder.get("g"), lambda g: holder.update(g=g))
+
+    def test_journal_restores_students_after_a_crash(self):
+        q = self.queue({})
+        a = [np.stack([p, p]) for p in unit(rng.normal(size=(10, 512)))]
+        b = [np.stack([p, p]) for p in unit(rng.normal(size=(12, 512)))]
+        q._journal_write("A1", a, "A1/x.jpg")
+        q._journal_write("B2", b, "B2/y.jpg")
+        g = self.queue({}).replay(None)                      # "restart" with no gallery file at all
+        self.assertEqual(sorted(g.ids), ["A1", "B2"])
+        self.assertEqual(int(g.sp_count[g.index["B2"]]), 12)
+        self.assertEqual(g.best_photo["A1"], "A1/x.jpg")
+
+    def test_corrupted_gallery_falls_back_to_backup(self):
+        g, _ = school(n=20)
+        g.save(self.tmp.name)
+        g2 = g.with_students({"9999": [np.stack([p, p]) for p in unit(rng.normal(size=(8, 512)))]}, {}, 0.55)
+        g2.save(self.tmp.name)
+        with open(os.path.join(self.tmp.name, "gallery.npz"), "wb") as f:
+            f.write(b"half-written")
+        back = Gallery.load(self.tmp.name)
+        self.assertIsNotNone(back)
+        self.assertEqual(len(back.ids), 20)                   # the previous save
+
+    def test_journal_entries_survive_until_in_the_backup_too(self):
+        holder = {}
+        q = self.queue(holder)
+        g, _ = school(n=5)
+        holder["g"] = g
+        q._journal_write("1000", [np.stack([p, p]) for p in unit(rng.normal(size=(8, 512)))], "")
+        q.dirty_since = 1
+        q._save()                                             # first save: entry must stay (backup doesn't have it)
+        self.assertTrue(os.path.exists(os.path.join(q.journal, "1000.npz")))
+        import time as _t; _t.sleep(0.05)
+        q.dirty_since = 1
+        q._save()                                             # second save: now in both files, safe to drop
+        self.assertFalse(os.path.exists(os.path.join(q.journal, "1000.npz")))
 
 
 class Tracking(unittest.TestCase):

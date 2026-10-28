@@ -204,3 +204,13 @@ body.hud-on { overflow: hidden; }
 .st-steps span::before { content: ''; position: absolute; inset: 0; width: var(--p, 0%); background: rgba(61, 255, 162, .25); transition: width .15s; }
 .st-steps span.on { color: #fff; border-color: var(--neon); }
 .st-steps span.ok { color: var(--neon); border-color: var(--neon); }
+.st-report { width: 100%; margin: -2px 0 10px; background: transparent; border: 1px solid var(--edge); color: var(--neon); border-radius: 4px; font: inherit; font-size: 11px; letter-spacing: .1em; padding: 6px; cursor: pointer; }
+.st-report:hover { border-color: var(--neon); }
+.st-outbox { border-color: rgba(255, 182, 72, .5); }
+.st-outbox::before { background: var(--amber); }
+.st-outbox h4 { color: var(--amber); }
+.st-outbox li { display: block; padding: 6px 0; border-bottom: 1px dashed rgba(255, 182, 72, .2); font-size: 12px; }
+.st-outbox li b { font-family: var(--sans); color: #fff; }
+.st-outbox li span { display: block; color: rgba(255, 220, 160, .75); font-size: 11px; }
+.st-outbox li.bad span { color: var(--red); }
+.st-outbox button { margin-top: 4px; background: transparent; border: 1px solid var(--red); color: var(--red); border-radius: 4px; font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; }
